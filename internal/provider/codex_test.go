@@ -85,7 +85,18 @@ func TestSparkReadUsageReportsSparkProvider(t *testing.T) {
 				"limit_reached": false,
 				"primary_window": {"used_percent": 5, "limit_window_seconds": 18000, "reset_at": 4102444800},
 				"secondary_window": {"used_percent": 7, "limit_window_seconds": 604800, "reset_at": 4103049600}
-			}
+			},
+			"additional_rate_limits": [
+				{
+					"limit_name": "GPT-5.3-Codex-Spark",
+					"metered_feature": "codex_bengalfox",
+					"rate_limit": {
+						"limit_reached": false,
+						"primary_window": {"used_percent": 1, "limit_window_seconds": 18000, "reset_at": 4102444900},
+						"secondary_window": {"used_percent": 2, "limit_window_seconds": 604800, "reset_at": 4103049700}
+					}
+				}
+			]
 		}`
 		return &http.Response{
 			StatusCode: http.StatusOK,
@@ -101,8 +112,41 @@ func TestSparkReadUsageReportsSparkProvider(t *testing.T) {
 	if u.Provider != "spark" || u.Plan != "plus" {
 		t.Fatalf("usage = %#v, want spark/plus", u)
 	}
-	if u.FiveHour.UsedPercent != 5 || u.Weekly.UsedPercent != 7 {
+	if u.FiveHour.UsedPercent != 1 || u.Weekly.UsedPercent != 2 {
 		t.Fatalf("windows = %#v %#v", u.FiveHour, u.Weekly)
+	}
+}
+
+func TestSparkReadUsageRequiresSparkLimit(t *testing.T) {
+	oldClient := usageHTTPClient
+	defer func() { usageHTTPClient = oldClient }()
+
+	home := t.TempDir()
+	t.Setenv("CODEX_HOME", home)
+	authJSON := `{"tokens":{"access_token":"access-token","refresh_token":"refresh-token","account_id":"account-123"}}`
+	if err := os.WriteFile(filepath.Join(home, "auth.json"), []byte(authJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	usageHTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		body := `{
+			"plan_type": "plus",
+			"rate_limit": {
+				"limit_reached": false,
+				"primary_window": {"used_percent": 5, "limit_window_seconds": 18000, "reset_at": 4102444800},
+				"secondary_window": {"used_percent": 7, "limit_window_seconds": 604800, "reset_at": 4103049600}
+			}
+		}`
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    req,
+		}, nil
+	})}
+
+	_, err := NewSpark(config.ProviderConfig{}).ReadUsage(context.Background())
+	if err == nil || !strings.Contains(err.Error(), `model "gpt-5.3-codex-spark"`) {
+		t.Fatalf("ReadUsage error = %v, want missing spark limit", err)
 	}
 }
 

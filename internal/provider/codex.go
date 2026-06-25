@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/BurntSushi/toml"
 	"github.com/creack/pty"
@@ -27,6 +28,7 @@ const (
 	codexChatGPTPath    = "/wham/usage"
 	codexAPIPath        = "/api/codex/usage"
 	codexUserAgent      = "limitping"
+	sparkDefaultModel   = "gpt-5.3-codex-spark"
 
 	codexTurnMinWait  = 4 * time.Second
 	codexTurnQuiet    = 2500 * time.Millisecond
@@ -39,41 +41,85 @@ const (
 // via the interactive, TTY-backed Codex CLI. Headless `codex exec` can consume
 // tokens without anchoring the subscription-backed Codex window.
 type Codex struct {
-	name             string
-	activityProvider string
-	cfg              config.ProviderConfig
-	auth             *auth.CodexAuth
+	cfg  config.ProviderConfig
+	auth *auth.CodexAuth
 }
 
 func NewCodex(cfg config.ProviderConfig) *Codex {
-	return newCodexBacked("codex", "codex", cfg)
-}
-
-// NewSpark returns a Codex-backed provider that uses the Spark Codex model but
-// reports itself as an independent provider to the scheduler and CLI.
-func NewSpark(cfg config.ProviderConfig) *Codex {
-	return newCodexBacked("spark", "codex", cfg)
-}
-
-func newCodexBacked(name, activityProvider string, cfg config.ProviderConfig) *Codex {
 	return &Codex{
-		name:             name,
-		activityProvider: activityProvider,
-		cfg:              cfg,
-		auth:             auth.NewCodexAuth(),
+		cfg:  cfg,
+		auth: auth.NewCodexAuth(),
 	}
 }
 
-func (c *Codex) Name() string { return c.name }
+func (c *Codex) Name() string { return "codex" }
 
-func (c *Codex) ActiveTask(_ context.Context) (string, bool, error) {
-	// Active-session detection relies entirely on the CLI hooks (see `limitping
-	// hooks install`). Without them we don't guess from the process list — the
-	// scheduler just pings.
-	if !activity.Enabled(c.activityProvider) {
+func (c *Codex) ActiveTask(ctx context.Context) (string, bool, error) {
+	return codexActiveTask(ctx)
+}
+
+func (c *Codex) ReadUsage(ctx context.Context) (*usage.Usage, error) {
+	body, r, err := readCodexUsage(ctx, c.auth)
+	if err != nil {
+		return nil, err
+	}
+	return codexUsageToUsage(c.Name(), body, r, r.RateLimit), nil
+}
+
+func (c *Codex) Trigger(ctx context.Context, dryRun bool) (*TriggerResult, error) {
+	return triggerCodex(ctx, c.cfg, dryRun)
+}
+
+// Spark is a separate provider backed by Codex auth and CLI transport.
+// Its usage window is the Spark-specific entry inside the Codex usage payload.
+type Spark struct {
+	cfg  config.ProviderConfig
+	auth *auth.CodexAuth
+}
+
+// NewSpark returns the Spark provider. It shares Codex credentials and the
+// Codex CLI binary, but it owns provider identity and usage selection.
+func NewSpark(cfg config.ProviderConfig) *Spark {
+	if cfg.Model == "" {
+		cfg.Model = sparkDefaultModel
+	}
+	return &Spark{
+		cfg:  cfg,
+		auth: auth.NewCodexAuth(),
+	}
+}
+
+func (s *Spark) Name() string { return "spark" }
+
+func (s *Spark) ActiveTask(ctx context.Context) (string, bool, error) {
+	return codexActiveTask(ctx)
+}
+
+func (s *Spark) ReadUsage(ctx context.Context) (*usage.Usage, error) {
+	body, r, err := readCodexUsage(ctx, s.auth)
+	if err != nil {
+		return nil, err
+	}
+	rateLimit, err := sparkRateLimitFromResponse(r, s.cfg.Model)
+	if err != nil {
+		return nil, err
+	}
+	return codexUsageToUsage(s.Name(), body, r, rateLimit), nil
+}
+
+func (s *Spark) Trigger(ctx context.Context, dryRun bool) (*TriggerResult, error) {
+	return triggerCodex(ctx, s.cfg, dryRun)
+}
+
+func codexActiveTask(_ context.Context) (string, bool, error) {
+	// Active-session detection relies entirely on the Codex CLI hooks (see
+	// `limitping hooks install`). Without them we don't guess from the process
+	// list; the scheduler just pings. Spark uses the same activity signal
+	// because its actual CLI session is still `codex`.
+	if !activity.Enabled("codex") {
 		return "", false, nil
 	}
-	return activity.Active(c.activityProvider)
+	return activity.Active("codex")
 }
 
 type codexWindow struct {
@@ -82,24 +128,36 @@ type codexWindow struct {
 	ResetAt            int64   `json:"reset_at"`
 }
 
-type codexUsageResp struct {
-	PlanType  string `json:"plan_type"`
-	RateLimit struct {
-		Allowed      bool        `json:"allowed"`
-		LimitReached bool        `json:"limit_reached"`
-		Primary      codexWindow `json:"primary_window"`
-		Secondary    codexWindow `json:"secondary_window"`
-	} `json:"rate_limit"`
-	Credits *struct {
-		HasCredits bool   `json:"has_credits"`
-		Unlimited  bool   `json:"unlimited"`
-		Balance    string `json:"balance"`
-	} `json:"credits"`
+type codexRateLimit struct {
+	Allowed      bool        `json:"allowed"`
+	LimitReached bool        `json:"limit_reached"`
+	Primary      codexWindow `json:"primary_window"`
+	Secondary    codexWindow `json:"secondary_window"`
 }
 
-func (c *Codex) ReadUsage(ctx context.Context) (*usage.Usage, error) {
-	accountID, _ := c.auth.AccountID(ctx)
-	body, err := fetchWithAuth(ctx, c.auth, func(token string) (*http.Request, error) {
+type codexAdditionalRateLimit struct {
+	LimitName      string         `json:"limit_name"`
+	MeteredFeature string         `json:"metered_feature"`
+	RateLimit      codexRateLimit `json:"rate_limit"`
+}
+
+type codexCredits struct {
+	HasCredits bool   `json:"has_credits"`
+	Unlimited  bool   `json:"unlimited"`
+	Balance    string `json:"balance"`
+}
+
+type codexUsageResp struct {
+	PlanType             string                     `json:"plan_type"`
+	RateLimit            codexRateLimit             `json:"rate_limit"`
+	AdditionalRateLimits []codexAdditionalRateLimit `json:"additional_rate_limits"`
+	Credits              *codexCredits              `json:"credits"`
+}
+
+func readCodexUsage(ctx context.Context, auth *auth.CodexAuth) ([]byte, codexUsageResp, error) {
+	var r codexUsageResp
+	accountID, _ := auth.AccountID(ctx)
+	body, err := fetchWithAuth(ctx, auth, func(token string) (*http.Request, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, codexUsageURL(), nil)
 		if err != nil {
 			return nil, err
@@ -113,22 +171,24 @@ func (c *Codex) ReadUsage(ctx context.Context) (*usage.Usage, error) {
 		return req, nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, r, err
 	}
 
-	var r codexUsageResp
 	if err := json.Unmarshal(body, &r); err != nil {
-		return nil, fmt.Errorf("codex usage: parsing response: %w", err)
+		return nil, r, fmt.Errorf("codex usage: parsing response: %w", err)
 	}
+	return body, r, nil
+}
 
+func codexUsageToUsage(provider string, body []byte, r codexUsageResp, rateLimit codexRateLimit) *usage.Usage {
 	u := &usage.Usage{
-		Provider:     c.Name(),
+		Provider:     provider,
 		Plan:         r.PlanType,
 		FetchedAt:    time.Now(),
 		Raw:          body,
-		LimitReached: r.RateLimit.LimitReached,
-		FiveHour:     codexWindowToUsage(r.RateLimit.Primary),
-		Weekly:       codexWindowToUsage(r.RateLimit.Secondary),
+		LimitReached: rateLimit.LimitReached,
+		FiveHour:     codexWindowToUsage(rateLimit.Primary),
+		Weekly:       codexWindowToUsage(rateLimit.Secondary),
 	}
 	if r.Credits != nil {
 		u.Credits = &usage.Credits{
@@ -137,7 +197,27 @@ func (c *Codex) ReadUsage(ctx context.Context) (*usage.Usage, error) {
 			Balance:    r.Credits.Balance,
 		}
 	}
-	return u, nil
+	return u
+}
+
+func sparkRateLimitFromResponse(r codexUsageResp, model string) (codexRateLimit, error) {
+	target := normalizeCodexLimitName(model)
+	for _, additional := range r.AdditionalRateLimits {
+		if normalizeCodexLimitName(additional.LimitName) == target {
+			return additional.RateLimit, nil
+		}
+	}
+	return codexRateLimit{}, fmt.Errorf("codex usage: no rate limit found for provider %q model %q", "spark", model)
+}
+
+func normalizeCodexLimitName(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(unicode.ToLower(r))
+		}
+	}
+	return b.String()
 }
 
 func codexUsageURL() string {
@@ -209,19 +289,19 @@ func codexWindowToUsage(w codexWindow) usage.Window {
 	}
 }
 
-func (c *Codex) Trigger(ctx context.Context, dryRun bool) (*TriggerResult, error) {
-	prompt := c.cfg.Prompt
+func triggerCodex(ctx context.Context, cfg config.ProviderConfig, dryRun bool) (*TriggerResult, error) {
+	prompt := cfg.Prompt
 	if prompt == "" {
 		prompt = "ok"
 	}
 	args := []string{}
-	if c.cfg.ReasoningEffort != "" {
-		args = append(args, "-c", "model_reasoning_effort="+c.cfg.ReasoningEffort)
+	if cfg.ReasoningEffort != "" {
+		args = append(args, "-c", "model_reasoning_effort="+cfg.ReasoningEffort)
 	}
-	if c.cfg.Model != "" {
-		args = append(args, "-m", c.cfg.Model)
+	if cfg.Model != "" {
+		args = append(args, "-m", cfg.Model)
 	}
-	args = append(args, codexInteractiveArgs(c.cfg.ExtraArgs)...)
+	args = append(args, codexInteractiveArgs(cfg.ExtraArgs)...)
 	args = append(args, prompt)
 	res := &TriggerResult{Command: "codex " + shellJoin(args)}
 	if dryRun {

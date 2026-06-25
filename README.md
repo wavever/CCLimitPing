@@ -69,7 +69,7 @@ provider quota: `limitping ping --dry-run`, `limitping watch --dry-run`, or
 |---|---|---|---|
 | **Claude Code** | `…/api/oauth/usage` | interactive Claude Code CLI | OAuth (Keychain / `~/.claude`) |
 | **Codex** | `…/backend-api/wham/usage` | interactive Codex CLI | OAuth (`~/.codex/auth.json`) |
-| **Spark** | `…/backend-api/wham/usage` | interactive Codex CLI with `gpt-5.3-codex-spark` | OAuth (`~/.codex/auth.json`) |
+| **Spark** | `…/backend-api/wham/usage` (`additional_rate_limits`) | interactive Codex CLI with `gpt-5.3-codex-spark` | OAuth (`~/.codex/auth.json`) |
 
 ## How it works
 
@@ -99,8 +99,9 @@ and pings as soon as the window resets.
   interactive `codex "<prompt>"` session; headless `codex exec` can consume
   tokens without anchoring the subscription-backed Codex window.
 - **Spark**: uses the same Codex usage endpoint, OAuth token, hooks, and
-  interactive CLI path, but sends the ping with model
-  `gpt-5.3-codex-spark` and appears as a separate `spark` provider.
+  interactive CLI path. It reads the `GPT-5.3-Codex-Spark` entry from
+  `additional_rate_limits`, sends the ping with model `gpt-5.3-codex-spark`,
+  and appears as a separate `spark` provider.
 
 Claude/Codex tokens are reused from the official tools (no separate login) and
 refreshed on 401. Spark reuses the Codex token.

@@ -61,7 +61,7 @@ limitping bg logs -f
 |---|---|---|---|
 | **Claude Code** | `…/api/oauth/usage` | 交互式 Claude Code CLI | OAuth(钥匙串 / `~/.claude`) |
 | **Codex** | `…/backend-api/wham/usage` | 交互式 Codex CLI | OAuth(`~/.codex/auth.json`) |
-| **Spark** | `…/backend-api/wham/usage` | 使用 `gpt-5.3-codex-spark` 的交互式 Codex CLI | OAuth(`~/.codex/auth.json`) |
+| **Spark** | `…/backend-api/wham/usage` (`additional_rate_limits`) | 使用 `gpt-5.3-codex-spark` 的交互式 Codex CLI | OAuth(`~/.codex/auth.json`) |
 
 ## 工作原理
 
@@ -86,7 +86,8 @@ limitping bg logs -f
   `GET https://chatgpt.com/backend-api/wham/usage`。触发使用带 TTY 的交互式
   `codex "<prompt>"` 会话;headless `codex exec` 可能会消耗 token,但不一定起算
   Codex 订阅窗口。
-- **Spark**:复用 Codex 用量端点、OAuth token、钩子和交互式 CLI 路径,但用
+- **Spark**:复用 Codex 用量端点、OAuth token、钩子和交互式 CLI 路径,但从
+  `additional_rate_limits` 中读取 `GPT-5.3-Codex-Spark` 条目,用
   `gpt-5.3-codex-spark` 模型发送 ping,并作为独立的 `spark` Provider 展示。
 
 Claude/Codex 的 token 直接复用官方工具(无需另外登录),遇到 401 会自动刷新。Spark 复用
