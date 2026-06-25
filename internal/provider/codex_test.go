@@ -67,6 +67,45 @@ func TestCodexReadUsageSendsCompatibleHeaders(t *testing.T) {
 	}
 }
 
+func TestSparkReadUsageReportsSparkProvider(t *testing.T) {
+	oldClient := usageHTTPClient
+	defer func() { usageHTTPClient = oldClient }()
+
+	home := t.TempDir()
+	t.Setenv("CODEX_HOME", home)
+	authJSON := `{"tokens":{"access_token":"access-token","refresh_token":"refresh-token","account_id":"account-123"}}`
+	if err := os.WriteFile(filepath.Join(home, "auth.json"), []byte(authJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	usageHTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		body := `{
+			"plan_type": "plus",
+			"rate_limit": {
+				"limit_reached": false,
+				"primary_window": {"used_percent": 5, "limit_window_seconds": 18000, "reset_at": 4102444800},
+				"secondary_window": {"used_percent": 7, "limit_window_seconds": 604800, "reset_at": 4103049600}
+			}
+		}`
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    req,
+		}, nil
+	})}
+
+	u, err := NewSpark(config.ProviderConfig{}).ReadUsage(context.Background())
+	if err != nil {
+		t.Fatalf("ReadUsage: %v", err)
+	}
+	if u.Provider != "spark" || u.Plan != "plus" {
+		t.Fatalf("usage = %#v, want spark/plus", u)
+	}
+	if u.FiveHour.UsedPercent != 5 || u.Weekly.UsedPercent != 7 {
+		t.Fatalf("windows = %#v %#v", u.FiveHour, u.Weekly)
+	}
+}
+
 func TestCodexUsageURLFromBase(t *testing.T) {
 	cases := map[string]string{
 		"":                                 "https://chatgpt.com/backend-api/wham/usage",
@@ -117,6 +156,26 @@ func TestCodexTriggerDryRunUsesInteractiveCommand(t *testing.T) {
 	}
 	if strings.Contains(res.Command, "exec") || strings.Contains(res.Command, "--json") {
 		t.Fatalf("command still uses headless mode: %q", res.Command)
+	}
+}
+
+func TestSparkTriggerDryRunUsesSparkModel(t *testing.T) {
+	c := NewSpark(config.ProviderConfig{
+		Prompt:          "ok",
+		Model:           "gpt-5.3-codex-spark",
+		ReasoningEffort: "low",
+	})
+
+	if c.Name() != "spark" {
+		t.Fatalf("Name() = %q, want spark", c.Name())
+	}
+	res, err := c.Trigger(context.Background(), true)
+	if err != nil {
+		t.Fatalf("dry-run trigger: %v", err)
+	}
+	want := "codex -c model_reasoning_effort=low -m gpt-5.3-codex-spark ok"
+	if res.Command != want {
+		t.Fatalf("command = %q, want %q", res.Command, want)
 	}
 }
 

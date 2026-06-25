@@ -28,8 +28,8 @@ func (d Duration) MarshalText() ([]byte, error) {
 	return []byte(d.Duration.String()), nil
 }
 
-// ProviderConfig holds the per-provider knobs. ReasoningEffort applies only to
-// Codex and is ignored by Claude.
+// ProviderConfig holds the per-provider knobs. ReasoningEffort applies to
+// Codex-backed providers and is ignored by Claude.
 type ProviderConfig struct {
 	Enabled         bool     `toml:"enabled"`
 	Prompt          string   `toml:"prompt"`
@@ -52,6 +52,7 @@ type Config struct {
 
 	Claude ProviderConfig `toml:"claude"`
 	Codex  ProviderConfig `toml:"codex"`
+	Spark  ProviderConfig `toml:"spark"`
 }
 
 // Default returns the built-in defaults used when no config file exists.
@@ -70,6 +71,12 @@ func Default() Config {
 			Enabled:         true,
 			Prompt:          "ok",
 			Model:           "gpt-5.4-mini",
+			ReasoningEffort: "low",
+		},
+		Spark: ProviderConfig{
+			Enabled:         false,
+			Prompt:          "ok",
+			Model:           "gpt-5.3-codex-spark",
 			ReasoningEffort: "low",
 		},
 	}
@@ -183,6 +190,16 @@ prompt = "ok"
 model = "gpt-5.4-mini"
 # "low" keeps the ping cheap; "minimal" is rejected when web_search/image_gen
 # tools are enabled in your Codex config.
+reasoning_effort = "low"
+extra_args = []
+align_start = ""
+
+[spark]
+# Spark is a separate watch target backed by the Codex CLI and credentials.
+# Disabled by default so upgrades do not add another quota-consuming ping.
+enabled = false
+prompt = "ok"
+model = "gpt-5.3-codex-spark"
 reasoning_effort = "low"
 extra_args = []
 align_start = ""

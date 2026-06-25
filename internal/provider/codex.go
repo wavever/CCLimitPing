@@ -39,24 +39,41 @@ const (
 // via the interactive, TTY-backed Codex CLI. Headless `codex exec` can consume
 // tokens without anchoring the subscription-backed Codex window.
 type Codex struct {
-	cfg  config.ProviderConfig
-	auth *auth.CodexAuth
+	name             string
+	activityProvider string
+	cfg              config.ProviderConfig
+	auth             *auth.CodexAuth
 }
 
 func NewCodex(cfg config.ProviderConfig) *Codex {
-	return &Codex{cfg: cfg, auth: auth.NewCodexAuth()}
+	return newCodexBacked("codex", "codex", cfg)
 }
 
-func (c *Codex) Name() string { return "codex" }
+// NewSpark returns a Codex-backed provider that uses the Spark Codex model but
+// reports itself as an independent provider to the scheduler and CLI.
+func NewSpark(cfg config.ProviderConfig) *Codex {
+	return newCodexBacked("spark", "codex", cfg)
+}
+
+func newCodexBacked(name, activityProvider string, cfg config.ProviderConfig) *Codex {
+	return &Codex{
+		name:             name,
+		activityProvider: activityProvider,
+		cfg:              cfg,
+		auth:             auth.NewCodexAuth(),
+	}
+}
+
+func (c *Codex) Name() string { return c.name }
 
 func (c *Codex) ActiveTask(_ context.Context) (string, bool, error) {
 	// Active-session detection relies entirely on the CLI hooks (see `limitping
 	// hooks install`). Without them we don't guess from the process list — the
 	// scheduler just pings.
-	if !activity.Enabled("codex") {
+	if !activity.Enabled(c.activityProvider) {
 		return "", false, nil
 	}
-	return activity.Active("codex")
+	return activity.Active(c.activityProvider)
 }
 
 type codexWindow struct {
@@ -105,7 +122,7 @@ func (c *Codex) ReadUsage(ctx context.Context) (*usage.Usage, error) {
 	}
 
 	u := &usage.Usage{
-		Provider:     "codex",
+		Provider:     c.Name(),
 		Plan:         r.PlanType,
 		FetchedAt:    time.Now(),
 		Raw:          body,

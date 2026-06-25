@@ -12,13 +12,13 @@
 ![Go](https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go&logoColor=white)
 ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)
 
-Start the next **Claude Code** or **Codex** rate-limit window the moment the
-previous one resets.
+Start the next **Claude Code**, **Codex**, or **Spark** rate-limit window the
+moment the previous one resets.
 
-Claude Code and Codex subscription limits run on **5-hour rolling windows**
-(plus a weekly cap). A fresh 5h window does not start just because the previous
-one reset; it starts when you send the first billable request. If that happens
-hours later, the gap is wasted and your window schedule drifts.
+Claude Code, Codex, and Spark subscription limits run on **5-hour rolling
+windows** (plus a weekly cap). A fresh 5h window does not start just because the
+previous one reset; it starts when you send the first billable request. If that
+happens hours later, the gap is wasted and your window schedule drifts.
 
 `limitping` watches the reset time and sends one tiny request through the
 official provider CLI right after rollover. Run it once, keep `watch` in the
@@ -28,6 +28,7 @@ after the terminal closes.
 ```
 claude  ✓ pinged (6.6s)
 codex   ✓ pinged (13.6s)
+spark   ✓ pinged (12.4s)
 ```
 
 ## Highlights
@@ -37,10 +38,10 @@ codex   ✓ pinged (13.6s)
   `bg start` with `bg status`, `bg logs -f`, and `bg stop`.
 - Shows 5h and weekly usage, reset countdowns, and background watcher state from
   read-only usage endpoints.
-- Triggers Claude Code and Codex through their official CLIs using your existing
-  logged-in credentials.
-- Detects active Claude/Codex turns via CLI hooks and defers its own ping so it
-  does not compete with your work.
+- Triggers Claude Code, Codex, and Spark through their official CLIs using your
+  existing logged-in credentials.
+- Detects active Claude/Codex turns via CLI hooks; Spark uses the Codex hook
+  signal because it runs through the Codex CLI.
 - Includes dry-run modes, weekly-limit guards, reset buffers, cheap-model
   defaults, macOS notifications, local config, and no telemetry.
 
@@ -68,6 +69,7 @@ provider quota: `limitping ping --dry-run`, `limitping watch --dry-run`, or
 |---|---|---|---|
 | **Claude Code** | `…/api/oauth/usage` | interactive Claude Code CLI | OAuth (Keychain / `~/.claude`) |
 | **Codex** | `…/backend-api/wham/usage` | interactive Codex CLI | OAuth (`~/.codex/auth.json`) |
+| **Spark** | `…/backend-api/wham/usage` | interactive Codex CLI with `gpt-5.3-codex-spark` | OAuth (`~/.codex/auth.json`) |
 
 ## How it works
 
@@ -81,10 +83,10 @@ Two cleanly separated jobs:
 When `watch` sees a 5h window has reset, it first checks whether a Claude/Codex
 session is actively mid-turn. If one is, `limitping` waits and re-reads usage
 instead of sending its own ping, because that session's next model request will
-start the new window naturally. This check relies on the
-[CLI hooks](#active-session-detection-hooks) (installed automatically by the
-install script); without them, `limitping` skips the check and pings as soon as
-the window resets.
+start the new window naturally. Spark uses the Codex activity signal. This check
+relies on the [CLI hooks](#active-session-detection-hooks) (installed
+automatically by the install script); without them, `limitping` skips the check
+and pings as soon as the window resets.
 
 - **Claude**: reads `GET https://api.anthropic.com/api/oauth/usage` using the
   OAuth token from the macOS Keychain (`Claude Code-credentials`) or
@@ -96,9 +98,12 @@ the window resets.
   OAuth token from `~/.codex/auth.json`. Triggering uses a TTY-backed
   interactive `codex "<prompt>"` session; headless `codex exec` can consume
   tokens without anchoring the subscription-backed Codex window.
+- **Spark**: uses the same Codex usage endpoint, OAuth token, hooks, and
+  interactive CLI path, but sends the ping with model
+  `gpt-5.3-codex-spark` and appears as a separate `spark` provider.
 
 Claude/Codex tokens are reused from the official tools (no separate login) and
-refreshed on 401.
+refreshed on 401. Spark reuses the Codex token.
 
 ## Install
 
@@ -154,7 +159,7 @@ go build -o bin/limitping ./cmd/limitping
 ```
 
 Each provider you enable needs its own credentials: the `claude` / `codex` CLIs
-logged in.
+logged in. Spark uses the Codex CLI credentials.
 
 ## Usage
 
@@ -166,9 +171,10 @@ limitping status -v            # also print raw JSON
 limitping ping                 # trigger all enabled providers now (alias: p)
 limitping ping claude          # Claude only
 limitping ping codex           # Codex only
+limitping ping spark           # Spark only
 limitping ping --dry-run       # show the commands without sending
 limitping watch                # foreground daemon: ping each window at reset (alias: w)
-limitping watch claude         # watch only one provider (claude|codex)
+limitping watch claude         # watch only one provider (claude|codex|spark)
 limitping watch --live         # optional live heartbeat/status line
 limitping watch --dry-run      # log when pings would fire, without sending
 limitping bg start             # run watch in the background, freeing the terminal
@@ -203,7 +209,7 @@ Short aliases are also available for config commands: `limitping c i` for
 | `uninstall` | `rm`, `remove` |
 
 `ping` shows the exact command and a live timer (a spinner on a terminal).
-Current Claude/Codex interactive trigger sessions do not expose reliable
+Current Claude/Codex/Spark interactive trigger sessions do not expose reliable
 machine-readable per-ping token or cost data, so success output normally shows
 elapsed time only:
 
@@ -212,6 +218,8 @@ claude  → claude --model haiku .
 claude  ✓ pinged (6.6s)
 codex   → codex -c model_reasoning_effort=low -m gpt-5.4-mini ok
 codex   ✓ pinged (13.6s)
+spark   → codex -c model_reasoning_effort=low -m gpt-5.3-codex-spark ok
+spark   ✓ pinged (12.4s)
 ```
 
 Use `status` or `bg status` for the authoritative 5h/weekly window view after a
@@ -284,6 +292,14 @@ model            = "gpt-5.4-mini"  # cheapest Codex model for triggering
 reasoning_effort = "low"  # "minimal" is rejected when web_search/image_gen tools are enabled
 extra_args       = []     # extra Codex CLI args; exec-only flags such as --json are ignored
 align_start      = ""
+
+[spark]
+enabled          = false  # opt in; Spark is a separate Codex-backed watch target
+prompt           = "ok"
+model            = "gpt-5.3-codex-spark"
+reasoning_effort = "low"
+extra_args       = []
+align_start      = ""
 ```
 
 Top-level keys:
@@ -305,11 +321,13 @@ your budget:
 - **Claude → `haiku`**: also avoids the separate weekly Opus bucket.
 - **Codex → `gpt-5.4-mini`**: the mini variant (see `~/.codex/models_cache.json`
   for what your plan offers).
+- **Spark → `gpt-5.3-codex-spark`**: a Codex-backed Spark target, disabled by
+  default so upgrades do not add another quota-consuming ping.
 
-Claude/Codex don't expose per-model prices at runtime (Anthropic's local cost
-cache is empty; Codex's model cache has no price field), so the cheapest model is
-a sensible default rather than a live price lookup. Override `model` per provider
-if you prefer.
+Claude/Codex/Spark don't expose per-model prices at runtime (Anthropic's local
+cost cache is empty; Codex's model cache has no price field), so the cheapest
+model is a sensible default rather than a live price lookup. Override `model`
+per provider if you prefer.
 
 ### Active-session detection (hooks)
 
@@ -330,7 +348,8 @@ This registers limitping's hooks in `~/.claude/settings.json` and
 written). The hooks invoke the hidden `limitping hook <provider>` command on
 `UserPromptSubmit` / `PreToolUse` / `PostToolUse` / `Stop` (Claude also
 `SessionEnd`) to record whether a session is mid-turn under
-`~/.config/limitping/activity/`.
+`~/.config/limitping/activity/`. Spark runs through the Codex CLI and uses the
+Codex hook/activity marker; there is no separate Spark hook config.
 
 > [!NOTE]
 > Claude Code loads its hooks automatically — nothing to do there. **Codex**
@@ -393,9 +412,9 @@ launchctl load ~/Library/LaunchAgents/com.limitping.watch.plist
   uses a minimal prompt and low reasoning, so the cost is tiny but non-zero.
 - The **usage endpoints are unofficial** and could change; they're read-only and
   isolated per provider for easy patching.
-- macOS-first: Keychain reads and notifications are macOS-only. Codex `auth.json`
-  is cross-platform; Claude on Linux uses `~/.claude/.credentials.json`;
-  notifications are a no-op off macOS.
+- macOS-first: Keychain reads and notifications are macOS-only. Codex/Spark
+  `auth.json` is cross-platform; Claude on Linux uses
+  `~/.claude/.credentials.json`; notifications are a no-op off macOS.
 
 ## Layout
 
@@ -403,7 +422,7 @@ launchctl load ~/Library/LaunchAgents/com.limitping.watch.plist
 cmd/limitping            CLI entry
 internal/config          TOML config
 internal/usage           normalized usage model
-internal/auth            Claude (Keychain) + Codex (auth.json) tokens
+internal/auth            Claude (Keychain) + Codex/Spark (auth.json) tokens
 internal/provider        per-provider ReadUsage (endpoint) + Trigger (CLI)
 internal/activity        hook-based active-session state (shared by the hook cmd + scheduler)
 internal/pricing         pricing helpers for providers that expose token usage
@@ -424,9 +443,9 @@ go vet ./...
 go test ./...
 ```
 
-Providers are isolated in `internal/provider` (one file each) with a small
-`Provider` interface (`ReadUsage` + `Trigger`), so adding a new provider is
-mostly a self-contained file plus wiring in `internal/cli` and `internal/config`.
+Providers are isolated in `internal/provider` behind a small `Provider`
+interface (`ReadUsage` + `Trigger`), so adding a new provider is mostly
+self-contained provider code plus wiring in `internal/cli` and `internal/config`.
 
 **Releasing** is automated: push a tag and GitHub Actions runs GoReleaser to
 build the cross-platform binaries and publish a Release.

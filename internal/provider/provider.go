@@ -45,7 +45,7 @@ func newUsageHTTPClient() *http.Client {
 
 // Provider abstracts a single AI coding provider.
 type Provider interface {
-	// Name is the stable identifier ("claude", "codex").
+	// Name is the stable identifier ("claude", "codex", "spark").
 	Name() string
 	// ReadUsage fetches the current rate-limit snapshot. This is a read-only
 	// call against the provider's usage endpoint and consumes no quota.

@@ -22,7 +22,7 @@ func newWatchCmd() *cobra.Command {
 		Short:     text.watchShort,
 		Long:      text.watchLong,
 		Args:      cobra.MatchAll(cobra.MaximumNArgs(1), cobra.OnlyValidArgs),
-		ValidArgs: []string{"claude", "codex", "all"},
+		ValidArgs: []string{"claude", "codex", "spark", "all"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.Load()
 			if err != nil {

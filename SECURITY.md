@@ -17,7 +17,7 @@ security contact, without including sensitive details.
 
 Helpful reports include:
 
-- The affected command or provider (`claude` or `codex`)
+- The affected command or provider (`claude`, `codex`, or `spark`)
 - The operating system and `limitping version`
 - A minimal reproduction that does not include credentials
 - Whether the issue affects token handling, config files, usage endpoints, or
@@ -46,6 +46,7 @@ Out of scope:
 
 - Claude Code OAuth credentials from the macOS Keychain or
   `~/.claude/.credentials.json`
-- Codex OAuth credentials from `~/.codex/auth.json` or `$CODEX_HOME/auth.json`
+- Codex/Spark OAuth credentials from `~/.codex/auth.json` or
+  `$CODEX_HOME/auth.json`
 
 Do not share these files or raw `status -v` output in public reports.

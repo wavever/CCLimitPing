@@ -122,8 +122,10 @@ func buildProvider(name string, cfg config.Config) (provider.Provider, error) {
 		return provider.NewClaude(cfg.Claude), nil
 	case "codex":
 		return provider.NewCodex(cfg.Codex), nil
+	case "spark":
+		return provider.NewSpark(cfg.Spark), nil
 	default:
-		return nil, fmt.Errorf("unknown provider %q (want claude, codex, or all)", name)
+		return nil, fmt.Errorf("unknown provider %q (want claude, codex, spark, or all)", name)
 	}
 }
 
@@ -135,6 +137,9 @@ func enabledProviders(cfg config.Config) []provider.Provider {
 	}
 	if cfg.Codex.Enabled {
 		ps = append(ps, provider.NewCodex(cfg.Codex))
+	}
+	if cfg.Spark.Enabled {
+		ps = append(ps, provider.NewSpark(cfg.Spark))
 	}
 	return ps
 }
@@ -191,6 +196,11 @@ func buildTargets(cfg config.Config) ([]scheduler.Target, error) {
 			return nil, err
 		}
 	}
+	if cfg.Spark.Enabled {
+		if err := add(provider.NewSpark(cfg.Spark), cfg.Spark.AlignStart); err != nil {
+			return nil, err
+		}
+	}
 	if len(targets) == 0 {
 		return nil, fmt.Errorf("no providers enabled in config")
 	}
@@ -222,6 +232,8 @@ func providerAlignStart(cfg config.Config, name string) string {
 		return cfg.Claude.AlignStart
 	case "codex":
 		return cfg.Codex.AlignStart
+	case "spark":
+		return cfg.Spark.AlignStart
 	}
 	return ""
 }

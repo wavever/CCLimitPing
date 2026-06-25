@@ -123,7 +123,7 @@ func isChineseLocale() bool {
 }
 
 var enText = cliText{
-	rootShort: "Keep Claude Code / Codex rate-limit windows back-to-back",
+	rootShort: "Keep Claude Code / Codex / Spark rate-limit windows back-to-back",
 	rootLong:  "limitping pings your AI coding provider the moment its 5h rate-limit window resets, so the next window starts immediately and stays aligned. Usage is read via zero-quota endpoints; pings go through the official CLIs.",
 	helpFlag:  "help for this command",
 	usageTemplate: `Usage:{{if .Runnable}}
@@ -179,7 +179,7 @@ Use "{{.CommandPath}} [command] --help" for more information about a command.{{e
 	pingLong: `Trigger a rate-limit window immediately by sending the minimal message for the selected provider.
 
 Arguments:
-  provider  Optional. One of: claude, codex, all.
+  provider  Optional. One of: claude, codex, spark, all.
             Defaults to all, which pings every enabled provider.
 
 Examples:
@@ -192,7 +192,7 @@ Examples:
 	watchLong: `Run the foreground daemon. When a provider's 5h window resets, limitping sends the minimal message to start the next window.
 
 Arguments:
-  provider  Optional. One of: claude, codex, all.
+  provider  Optional. One of: claude, codex, spark, all.
             Defaults to all, which watches every enabled provider.
 
 Examples:
@@ -219,7 +219,7 @@ Only one watcher runs at a time, foreground or background. The background proces
 	bgStartLong: `Launch the watch daemon in the background (detached from the terminal) and return immediately, freeing your shell. Output goes to a log file under the config directory.
 
 Arguments:
-  provider  Optional. One of: claude, codex, all.
+  provider  Optional. One of: claude, codex, spark, all.
             Defaults to all, which watches every enabled provider.
 
 Examples:
@@ -232,7 +232,7 @@ Examples:
 	bgLogsFollowFlag: "follow the log output (like tail -f)",
 	bgLogsLinesFlag:  "number of trailing log lines to show",
 
-	bgHintStart:          "Start it with: limitping bg start [claude|codex] [--dry-run]",
+	bgHintStart:          "Start it with: limitping bg start [claude|codex|spark] [--dry-run]",
 	bgHintManage:         "Manage it with: limitping bg logs -f  |  limitping bg stop",
 	bgNotRunning:         "Background watch: not running.",
 	bgClearedStaleFmt:    "Background watch: not running (cleared stale pid %d).\n",
@@ -263,14 +263,14 @@ Examples:
 	hooksShort: "Manage Claude/Codex hooks for accurate active-session detection",
 	hooksLong: `Manage the hooks that let limitping tell whether a Claude Code or Codex session is actually mid-turn (rather than merely running).
 
-When installed, limitping defers its ping while you're actively working and resumes once the turn ends. Without hooks limitping skips this check and pings as soon as the window resets. The install script sets these hooks up automatically.`,
+When installed, limitping defers its ping while you're actively working and resumes once the turn ends. Spark uses the Codex hook signal because it runs through the Codex CLI. Without hooks limitping skips this check and pings as soon as the window resets. The install script sets these hooks up automatically.`,
 	hooksInstallShort: "Register limitping's hooks in the Claude/Codex configs",
 	hooksInstallLong: `Register limitping's hooks in ~/.claude/settings.json and ~/.codex/hooks.json (existing settings are preserved; a .bak backup is written).
 
 Arguments:
   provider  Optional. One of: claude, codex, all. Defaults to all.
 
-Claude Code loads its hooks automatically. Codex requires a one-time trust: run /hooks inside Codex to enable them.
+Claude Code loads its hooks automatically. Codex requires a one-time trust: run /hooks inside Codex to enable them. Spark uses the Codex hook signal.
 
 Examples:
   limitping hooks install
@@ -298,7 +298,7 @@ Examples:
 }
 
 var zhText = cliText{
-	rootShort: "让 Claude Code / Codex 的限额窗口自动接龙",
+	rootShort: "让 Claude Code / Codex / Spark 的限额窗口自动接龙",
 	rootLong:  "limitping 会在 AI 编程 Provider 的 5h 限额窗口重置时立即发送 ping，让下一个窗口马上开始并保持对齐。用量读取走零消耗接口；ping 通过官方 CLI 发送。",
 	helpFlag:  "显示此命令的帮助",
 	usageTemplate: `用法:{{if .Runnable}}
@@ -354,7 +354,7 @@ var zhText = cliText{
 	pingLong: `通过向指定 Provider 发送最小消息，立即触发一个限额窗口。
 
 参数:
-  provider  可选。取值: claude、codex、all。
+  provider  可选。取值: claude、codex、spark、all。
             默认是 all，会 ping 所有已启用的 Provider。
 
 示例:
@@ -367,7 +367,7 @@ var zhText = cliText{
 	watchLong: `以前台守护方式运行。某个 Provider 的 5h 窗口重置后，limitping 会发送最小消息来开启下一个窗口。
 
 参数:
-  provider  可选。取值: claude、codex、all。
+  provider  可选。取值: claude、codex、spark、all。
             默认是 all，会监测所有已启用的 Provider。
 
 示例:
@@ -394,7 +394,7 @@ var zhText = cliText{
 	bgStartLong: `在后台（脱离终端）启动 watch 守护进程并立即返回，释放当前终端。输出会写入配置目录下的日志文件。
 
 参数:
-  provider  可选。取值: claude、codex、all。
+  provider  可选。取值: claude、codex、spark、all。
             默认是 all，会监测所有已启用的 Provider。
 
 示例:
@@ -407,7 +407,7 @@ var zhText = cliText{
 	bgLogsFollowFlag: "持续跟踪日志输出（类似 tail -f）",
 	bgLogsLinesFlag:  "显示最后多少行日志",
 
-	bgHintStart:          "启动: limitping bg start [claude|codex] [--dry-run]",
+	bgHintStart:          "启动: limitping bg start [claude|codex|spark] [--dry-run]",
 	bgHintManage:         "管理: limitping bg logs -f  |  limitping bg stop",
 	bgNotRunning:         "后台监听：未在运行。",
 	bgClearedStaleFmt:    "后台监听：未在运行（已清理失效的 pid %d）。\n",
@@ -438,14 +438,14 @@ var zhText = cliText{
 	hooksShort: "管理 Claude/Codex 钩子，精确判断会话是否正在运行",
 	hooksLong: `管理用于判断 Claude Code 或 Codex 会话是否真正处于对话进行中（而非仅仅进程存在）的钩子。
 
-安装后，limitping 会在你正在使用时推迟 ping，并在一轮对话结束后恢复。未安装钩子时，limitping 会跳过该检查，窗口一重置就直接 ping。安装脚本会自动装好这些钩子。`,
+安装后，limitping 会在你正在使用时推迟 ping，并在一轮对话结束后恢复。Spark 通过 Codex CLI 运行，因此复用 Codex 钩子信号。未安装钩子时，limitping 会跳过该检查，窗口一重置就直接 ping。安装脚本会自动装好这些钩子。`,
 	hooksInstallShort: "在 Claude/Codex 配置中注册 limitping 的钩子",
 	hooksInstallLong: `在 ~/.claude/settings.json 和 ~/.codex/hooks.json 中注册 limitping 的钩子（保留已有配置，并写入 .bak 备份）。
 
 参数:
   provider  可选。取值: claude、codex、all。默认是 all。
 
-Claude Code 会自动加载钩子；Codex 需要一次性信任：在 Codex 中运行 /hooks 启用它们。
+Claude Code 会自动加载钩子；Codex 需要一次性信任：在 Codex 中运行 /hooks 启用它们。Spark 复用 Codex 钩子信号。
 
 示例:
   limitping hooks install
