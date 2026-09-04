@@ -231,11 +231,15 @@ elapsed time only:
 ```
 claude  → claude --model haiku .
 claude  ✓ pinged (6.6s)
-codex   → codex -c model_reasoning_effort=low -m gpt-5.4-mini ok
-codex   ✓ pinged (13.6s)
-spark   → codex -c model_reasoning_effort=low -m gpt-5.3-codex-spark ok
-spark   ✓ pinged (12.4s)
+codex   → codex -c model_reasoning_effort=low -m gpt-5.6-luna -c tui.notifications=["agent-turn-complete"] -c tui.notification_method="osc9" -c tui.notification_condition="always" ok
+codex   ✓ pinged (6.8s)
+spark   → codex -c model_reasoning_effort=low -m gpt-5.3-codex-spark -c tui.notifications=["agent-turn-complete"] -c tui.notification_method="osc9" -c tui.notification_condition="always" ok
+spark   ✓ pinged (6.5s)
 ```
+
+For Codex/Spark, `limitping` automatically appends the `-c tui...` flags to
+enable Codex CLI's turn-completion notifications, so it can detect ping success
+and exit immediately.
 
 Use `status` or `bg status` for the authoritative 5h/weekly window view after a
 ping.
@@ -328,7 +332,7 @@ continue_prompt = "continue"  # message `continue` injects on 5h recovery; empty
 [codex]
 enabled          = true
 prompt           = "ok"
-model            = "gpt-5.4-mini"  # cheapest Codex model for triggering
+model            = "gpt-5.6-luna"  # cheapest Codex model for triggering
 reasoning_effort = "low"  # "minimal" is rejected when web_search/image_gen tools are enabled
 extra_args       = []     # extra Codex CLI args; exec-only flags such as --json are ignored
 align_start      = ""

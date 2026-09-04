@@ -36,17 +36,26 @@ const (
 	codexAPIPath        = "/api/codex/usage"
 	codexUserAgent      = "limitping"
 	sparkDefaultModel   = "gpt-5.3-codex-spark"
+	codexTurnComplete   = "\x1b]9;"
+	codexTurnScanLimit  = 4096
 
 	// codexRedeemCooldown throttles the automatic redemption path so a
 	// once-a-minute poll loop cannot re-attempt a refused redemption every cycle.
 	codexRedeemCooldown = 15 * time.Minute
 
-	codexTurnMinWait  = 4 * time.Second
-	codexTurnQuiet    = 2500 * time.Millisecond
-	codexTurnMaxWait  = 45 * time.Second
-	codexExitGrace    = 5 * time.Second
-	codexPollInterval = 200 * time.Millisecond
+	codexTurnMaxWait = 45 * time.Second
+	codexExitGrace   = 5 * time.Second
 )
+
+type codexInteractiveTiming struct {
+	maxWait   time.Duration
+	exitGrace time.Duration
+}
+
+var defaultCodexInteractiveTiming = codexInteractiveTiming{
+	maxWait:   codexTurnMaxWait,
+	exitGrace: codexExitGrace,
+}
 
 // Codex reads usage via the ChatGPT backend usage endpoint and triggers windows
 // via the interactive, TTY-backed Codex CLI. Headless `codex exec` can consume
@@ -551,6 +560,10 @@ func codexWindowToUsage(w codexWindow) usage.Window {
 }
 
 func triggerCodex(ctx context.Context, cfg config.ProviderConfig, dryRun bool) (*TriggerResult, error) {
+	return triggerCodexWithTiming(ctx, cfg, dryRun, defaultCodexInteractiveTiming)
+}
+
+func triggerCodexWithTiming(ctx context.Context, cfg config.ProviderConfig, dryRun bool, timing codexInteractiveTiming) (*TriggerResult, error) {
 	prompt := cfg.Prompt
 	if prompt == "" {
 		prompt = "ok"
@@ -563,6 +576,13 @@ func triggerCodex(ctx context.Context, cfg config.ProviderConfig, dryRun bool) (
 		args = append(args, "-m", cfg.Model)
 	}
 	args = append(args, codexInteractiveArgs(cfg.ExtraArgs)...)
+	// A PTY is always treated as focused, so force Codex's turn-complete OSC 9
+	// notification and use it as the exact boundary before stopping the TUI.
+	args = append(args,
+		"-c", `tui.notifications=["agent-turn-complete"]`,
+		"-c", `tui.notification_method="osc9"`,
+		"-c", `tui.notification_condition="always"`,
+	)
 	args = append(args, prompt)
 	res := &TriggerResult{Command: "codex " + shellJoin(args)}
 	if dryRun {
@@ -570,6 +590,9 @@ func triggerCodex(ctx context.Context, cfg config.ProviderConfig, dryRun bool) (
 	}
 
 	cmd := exec.CommandContext(ctx, "codex", args...)
+	if term := os.Getenv("TERM"); term == "" || term == "dumb" {
+		cmd.Env = append(cmd.Environ(), "TERM=xterm-256color")
+	}
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
 		return res, fmt.Errorf("codex interactive failed to start: %w", err)
@@ -577,8 +600,9 @@ func triggerCodex(ctx context.Context, cfg config.ProviderConfig, dryRun bool) (
 	defer ptmx.Close()
 
 	output := &limitedBuffer{limit: 4096}
+	markers := newCodexTurnMarkers()
 	go func() {
-		_, _ = io.Copy(output, ptmx)
+		_, _ = io.Copy(io.MultiWriter(output, markers), ptmx)
 	}()
 
 	done := make(chan error, 1)
@@ -586,41 +610,55 @@ func triggerCodex(ctx context.Context, cfg config.ProviderConfig, dryRun bool) (
 		done <- cmd.Wait()
 	}()
 
-	if terminal, err := codexAwait(ctx, cmd, ptmx, output, done, codexTurnMaxWait,
-		func(idle, elapsed time.Duration) bool {
-			return elapsed >= codexTurnMinWait && idle >= codexTurnQuiet
-		}); terminal {
+	if terminal, err := codexAwait(ctx, cmd, ptmx, output, markers.completed, done, timing.maxWait); terminal {
 		return res, err
 	}
 
-	return res, codexInteractiveStop(ctx, cmd, ptmx, done, output)
+	return res, codexInteractiveStop(ctx, cmd, ptmx, done, output, timing.exitGrace)
 }
 
-func codexAwait(ctx context.Context, cmd *exec.Cmd, ptmx *os.File, output *limitedBuffer, done <-chan error, maxWait time.Duration, ready func(idle, elapsed time.Duration) bool) (bool, error) {
-	start := time.Now()
-	deadline := time.After(maxWait)
-	ticker := time.NewTicker(codexPollInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case err := <-done:
-			return true, codexInteractiveErr(err, output)
-		case <-ctx.Done():
-			return true, codexInteractiveCancel(ctx, cmd, ptmx, done, output)
-		case <-deadline:
-			return false, nil
-		case <-ticker.C:
-			changed := output.changedAt()
-			if !changed.IsZero() && ready(time.Since(changed), time.Since(start)) {
-				return false, nil
-			}
-		}
+type codexTurnMarkers struct {
+	buf       []byte
+	finished  bool
+	completed chan struct{}
+}
+
+func newCodexTurnMarkers() *codexTurnMarkers {
+	return &codexTurnMarkers{completed: make(chan struct{})}
+}
+
+func (m *codexTurnMarkers) Write(p []byte) (int, error) {
+	if m.finished {
+		return len(p), nil
+	}
+	m.buf = append(m.buf, p...)
+	if start := bytes.Index(m.buf, []byte(codexTurnComplete)); start >= 0 && bytes.IndexByte(m.buf[start:], 0x07) >= 0 {
+		close(m.completed)
+		m.finished = true
+		m.buf = nil
+	}
+	if len(m.buf) > codexTurnScanLimit {
+		m.buf = append(m.buf[:0], m.buf[len(m.buf)-codexTurnScanLimit:]...)
+	}
+	return len(p), nil
+}
+
+func codexAwait(ctx context.Context, cmd *exec.Cmd, ptmx *os.File, output *limitedBuffer, completed <-chan struct{}, done <-chan error, maxWait time.Duration) (bool, error) {
+	select {
+	case <-completed:
+		return false, nil
+	case err := <-done:
+		return true, codexInteractiveErr(err, output)
+	case <-ctx.Done():
+		return true, codexInteractiveCancel(ctx, cmd, ptmx, done, output)
+	case <-time.After(maxWait):
+		return false, nil
 	}
 }
 
-func codexInteractiveStop(ctx context.Context, cmd *exec.Cmd, ptmx *os.File, done <-chan error, output *limitedBuffer) error {
-	deadline := time.After(codexExitGrace)
-	ticker := time.NewTicker(codexExitGrace / 2)
+func codexInteractiveStop(ctx context.Context, cmd *exec.Cmd, ptmx *os.File, done <-chan error, output *limitedBuffer, exitGrace time.Duration) error {
+	deadline := time.After(exitGrace)
+	ticker := time.NewTicker(exitGrace / 2)
 	defer ticker.Stop()
 
 	for sent := false; ; {

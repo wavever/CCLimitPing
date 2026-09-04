@@ -213,11 +213,13 @@ limitping uninstall            # 删除 limitping 以及配置/缓存(简称: rm
 ```
 claude  → claude --model haiku .
 claude  ✓ pinged (6.6s)
-codex   → codex -c model_reasoning_effort=low -m gpt-5.4-mini ok
-codex   ✓ pinged (13.6s)
-spark   → codex -c model_reasoning_effort=low -m gpt-5.3-codex-spark ok
-spark   ✓ pinged (12.4s)
+codex   → codex -c model_reasoning_effort=low -m gpt-5.6-luna -c tui.notifications=["agent-turn-complete"] -c tui.notification_method="osc9" -c tui.notification_condition="always" ok
+codex   ✓ pinged (6.8s)
+spark   → codex -c model_reasoning_effort=low -m gpt-5.3-codex-spark -c tui.notifications=["agent-turn-complete"] -c tui.notification_method="osc9" -c tui.notification_condition="always" ok
+spark   ✓ pinged (6.5s)
 ```
+
+对于 Codex/Spark，`limitping` 会自动追加 `-c tui...` 参数以启用 Codex CLI 的 turn 结束通知，从而检测 ping 成功并立即退出。
 
 ping 后请用 `status` 或 `bg status` 查看权威的 5h/周窗口状态。
 
@@ -309,7 +311,7 @@ continue_prompt = "continue"  # continue 在 5h 恢复时注入的消息;留空 
 [codex]
 enabled          = true
 prompt           = "ok"
-model            = "gpt-5.4-mini"  # 用于触发的最便宜 Codex 模型
+model            = "gpt-5.6-luna"  # 用于触发的最便宜 Codex 模型
 reasoning_effort = "low"  # 启用 web_search/image_gen 工具时,"minimal" 会被拒绝
 extra_args       = []     # 额外 Codex CLI 参数;--json 等 exec-only 参数会被忽略
 align_start      = ""
