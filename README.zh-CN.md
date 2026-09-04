@@ -213,7 +213,7 @@ limitping uninstall            # 删除 limitping 以及配置/缓存(简称: rm
 ```
 claude  → claude --model haiku .
 claude  ✓ pinged (6.6s)
-codex   → codex -c model_reasoning_effort=low -m gpt-5.4-mini -c tui.notifications=["agent-turn-complete"] -c tui.notification_method="osc9" -c tui.notification_condition="always" ok
+codex   → codex -c model_reasoning_effort=low -m gpt-5.6-luna -c tui.notifications=["agent-turn-complete"] -c tui.notification_method="osc9" -c tui.notification_condition="always" ok
 codex   ✓ pinged (6.8s)
 spark   → codex -c model_reasoning_effort=low -m gpt-5.3-codex-spark -c tui.notifications=["agent-turn-complete"] -c tui.notification_method="osc9" -c tui.notification_condition="always" ok
 spark   ✓ pinged (6.5s)
@@ -311,7 +311,7 @@ continue_prompt = "continue"  # continue 在 5h 恢复时注入的消息;留空 
 [codex]
 enabled          = true
 prompt           = "ok"
-model            = "gpt-5.4-mini"  # 用于触发的最便宜 Codex 模型
+model            = "gpt-5.6-luna"  # 用于触发的最便宜 Codex 模型
 reasoning_effort = "low"  # 启用 web_search/image_gen 工具时,"minimal" 会被拒绝
 extra_args       = []     # 额外 Codex CLI 参数;--json 等 exec-only 参数会被忽略
 align_start      = ""

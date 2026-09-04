@@ -296,7 +296,7 @@ func TestCodexResetCreditsURLFromBase(t *testing.T) {
 
 func TestParseCodexBaseURL(t *testing.T) {
 	contents := `
-model = "gpt-5.4-mini"
+model = "gpt-5.6-luna"
 chatgpt_base_url = "https://api.openai.com"
 `
 	if got := parseCodexBaseURL(contents); got != "https://api.openai.com" {
@@ -307,7 +307,7 @@ chatgpt_base_url = "https://api.openai.com"
 func TestCodexTriggerDryRunUsesInteractiveCommand(t *testing.T) {
 	c := NewCodex(config.ProviderConfig{
 		Prompt:          "ok",
-		Model:           "gpt-5.4-mini",
+		Model:           "gpt-5.6-luna",
 		ReasoningEffort: "low",
 		ExtraArgs: []string{
 			"--skip-git-repo-check",
@@ -322,7 +322,7 @@ func TestCodexTriggerDryRunUsesInteractiveCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dry-run trigger: %v", err)
 	}
-	want := "codex -c model_reasoning_effort=low -m gpt-5.4-mini --search --sandbox read-only -c tui.notifications=[\"agent-turn-complete\"] -c tui.notification_method=\"osc9\" -c tui.notification_condition=\"always\" ok"
+	want := "codex -c model_reasoning_effort=low -m gpt-5.6-luna --search --sandbox read-only -c tui.notifications=[\"agent-turn-complete\"] -c tui.notification_method=\"osc9\" -c tui.notification_condition=\"always\" ok"
 	if res.Command != want {
 		t.Fatalf("command = %q, want %q", res.Command, want)
 	}
