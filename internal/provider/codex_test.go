@@ -322,12 +322,84 @@ func TestCodexTriggerDryRunUsesInteractiveCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dry-run trigger: %v", err)
 	}
-	want := "codex -c model_reasoning_effort=low -m gpt-5.4-mini --search --sandbox read-only ok"
+	want := "codex -c model_reasoning_effort=low -m gpt-5.4-mini --search --sandbox read-only -c tui.notifications=[\"agent-turn-complete\"] -c tui.notification_method=\"osc9\" -c tui.notification_condition=\"always\" ok"
 	if res.Command != want {
 		t.Fatalf("command = %q, want %q", res.Command, want)
 	}
 	if strings.Contains(res.Command, "exec") || strings.Contains(res.Command, "--json") {
 		t.Fatalf("command still uses headless mode: %q", res.Command)
+	}
+}
+
+func TestCodexTriggerWaitsForTurnCompleteNotification(t *testing.T) {
+	dir := t.TempDir()
+	argsPath := filepath.Join(dir, "args")
+	turnPath := filepath.Join(dir, "turn")
+	termPath := filepath.Join(dir, "term")
+	script := `#!/bin/sh
+printf '%s\n' "$@" > "$CODEX_TEST_ARGS"
+printf '%s' "$TERM" > "$CODEX_TEST_TERM"
+printf 'startup screen\n'
+sleep 0.08
+printf 'submitted' > "$CODEX_TEST_TURN"
+i=0
+while [ "$i" -lt 20 ]; do
+  printf '.'
+  sleep 0.01
+  i=$((i + 1))
+done
+printf '\033]9;turn finished\007'
+trap 'exit 0' INT TERM
+while :; do
+  printf '.'
+  sleep 0.01
+done
+`
+	if err := os.WriteFile(filepath.Join(dir, "codex"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("CODEX_TEST_ARGS", argsPath)
+	t.Setenv("CODEX_TEST_TURN", turnPath)
+	t.Setenv("CODEX_TEST_TERM", termPath)
+	t.Setenv("TERM", "dumb")
+
+	timing := codexInteractiveTiming{
+		maxWait:   time.Second,
+		exitGrace: 50 * time.Millisecond,
+	}
+	started := time.Now()
+	_, err := triggerCodexWithTiming(context.Background(), config.ProviderConfig{
+		Prompt: "ping through pty",
+		Model:  "test-model",
+	}, false, timing)
+	if err != nil {
+		t.Fatalf("trigger: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed >= 500*time.Millisecond {
+		t.Fatalf("trigger took %s, want completion marker to stop it before fallback", elapsed)
+	}
+
+	args, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(args), "ping through pty") {
+		t.Fatalf("arguments = %q, want positional prompt", args)
+	}
+	turn, err := os.ReadFile(turnPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(turn) != "submitted" {
+		t.Fatalf("turn marker = %q, want submitted", turn)
+	}
+	term, err := os.ReadFile(termPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(term) != "xterm-256color" {
+		t.Fatalf("TERM = %q, want xterm-256color", term)
 	}
 }
 
@@ -345,7 +417,7 @@ func TestSparkTriggerDryRunUsesSparkModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dry-run trigger: %v", err)
 	}
-	want := "codex -c model_reasoning_effort=low -m gpt-5.3-codex-spark ok"
+	want := "codex -c model_reasoning_effort=low -m gpt-5.3-codex-spark -c tui.notifications=[\"agent-turn-complete\"] -c tui.notification_method=\"osc9\" -c tui.notification_condition=\"always\" ok"
 	if res.Command != want {
 		t.Fatalf("command = %q, want %q", res.Command, want)
 	}
