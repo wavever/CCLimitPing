@@ -83,17 +83,38 @@ type ResetCreditRedeemer interface {
 	AutoRedeemResetCredit(ctx context.Context, u *usage.Usage) (outcome string, err error)
 }
 
+// CodexCompletionError means the TUI ended or timed out without completion evidence.
+type CodexCompletionError struct{ Reason string }
+
+func (e *CodexCompletionError) Error() string { return e.Reason }
+
 // TriggerResult reports what a Trigger did, including the token usage the ping
 // consumed (parsed from the CLI's machine-readable output). CostUSD is 0 when
 // the provider doesn't report a cost (e.g. Codex).
 type TriggerResult struct {
-	Command      string
-	HasUsage     bool
-	InputTokens  int
-	OutputTokens int
-	TotalTokens  int
-	CostUSD      float64
+	TurnCompleted   bool // positive completion evidence; an error-free exit alone is insufficient
+	Command         string
+	HasUsage        bool
+	InputTokens     int
+	OutputTokens    int
+	TotalTokens     int
+	CostUSD         float64
+	Verification    *usage.Verification
+	PreVerification *usage.Verification
+	PostcheckErr    error // quota-read failure, independent of the CLI outcome
+	StatusEnabled   bool
 }
+
+// VerifiedTrigger uses the same ping path with a watcher-owned pre-send reservation.
+type VerifiedTrigger interface {
+	TriggerWithReservation(context.Context, PingReservation) (*TriggerResult, error)
+}
+
+// AuthenticationError preserves credential failures for watcher retry policy.
+type AuthenticationError struct{ Err error }
+
+func (e *AuthenticationError) Error() string { return e.Err.Error() }
+func (e *AuthenticationError) Unwrap() error { return e.Err }
 
 // UsageHTTPError preserves usage endpoint HTTP failures so callers can make
 // status-aware scheduling decisions instead of treating every failure alike.
@@ -142,7 +163,7 @@ func fetchWithAuth(ctx context.Context, src tokenSource, buildReq func(token str
 	if status == http.StatusUnauthorized {
 		t, rerr := src.Refresh(ctx)
 		if rerr != nil {
-			return nil, fmt.Errorf("unauthorized and refresh failed: %w", rerr)
+			return nil, &AuthenticationError{Err: fmt.Errorf("unauthorized and refresh failed: %w", rerr)}
 		}
 		token = t
 		if body, status, header, err = doGet(ctx, token, buildReq); err != nil {
@@ -207,8 +228,10 @@ func doGet(ctx context.Context, token string, buildReq func(token string) (*http
 	return lastBody, lastStatus, lastHeader, lastErr
 }
 
+type noUsageRetryKey struct{}
+
 func shouldRetryUsageGET(ctx context.Context, attempt, status int, err error) bool {
-	if attempt >= usageGETAttempts || ctx.Err() != nil {
+	if ctx.Value(noUsageRetryKey{}) == true || attempt >= usageGETAttempts || ctx.Err() != nil {
 		return false
 	}
 	if err != nil {

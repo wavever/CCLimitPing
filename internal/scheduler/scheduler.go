@@ -100,6 +100,10 @@ func (s *Scheduler) Run(ctx context.Context) {
 }
 
 func (s *Scheduler) runTarget(ctx context.Context, t Target) {
+	if p, ok := t.Provider.(provider.VerifiedTrigger); ok && !s.dryRun {
+		s.runVerifiedTarget(ctx, t, p)
+		return
+	}
 	name := t.Provider.Name()
 	backoff := minBackoff
 	aligned := t.AlignStart.IsZero() // whether the align gate has been passed
@@ -112,6 +116,9 @@ func (s *Scheduler) runTarget(ctx context.Context, t Target) {
 
 		s.live.set(name, "checking usage…", time.Time{})
 		rctx, cancel := context.WithTimeout(ctx, readTimeout)
+		if s.dryRun {
+			rctx = provider.WithoutQuotaState(rctx)
+		}
 		u, err := t.Provider.ReadUsage(rctx)
 		cancel()
 		if err != nil {

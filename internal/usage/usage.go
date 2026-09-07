@@ -80,7 +80,25 @@ type Usage struct {
 	ResetCredits *ResetCredits
 	LimitReached bool
 	FetchedAt    time.Time
-	Raw          []byte // raw JSON body, for `status -v`
+	Raw          []byte        // raw JSON body, for `status -v`
+	Verification *Verification // Codex-backed providers only; not a shared window predicate
+	QuotaAccount string        // identity of the quota request; never part of status JSON
+}
+
+// Verification separates a completed CLI request from an observed quota window.
+type Verification struct {
+	FiveHour      StartStatus
+	Weekly        StartStatus
+	Target        string
+	Recovery      string
+	NextEligible  time.Time
+	PreviousReset time.Time // known reset boundary of the target's previous window
+	Warning       string
+}
+
+type StartStatus struct {
+	State string
+	DueAt time.Time
 }
 
 // Reset-credit auto-redeem policy. A credit that lapses unused is worth

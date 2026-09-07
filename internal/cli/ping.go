@@ -2,9 +2,11 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"sync/atomic"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -72,6 +74,9 @@ func runPing(parent context.Context, out io.Writer, text cliText, p provider.Pro
 	defer cancel()
 
 	start := time.Now()
+	var stage atomic.Value
+	stage.Store("")
+	ctx = provider.WithPingStage(ctx, func(s string) { stage.Store(s) })
 	type outcome struct {
 		res *provider.TriggerResult
 		err error
@@ -100,18 +105,34 @@ func runPing(parent context.Context, out io.Writer, text cliText, p provider.Pro
 			report(out, text, name, start, o.res, o.err)
 			return o.err
 		case <-ticker.C:
-			fmt.Fprintf(out, text.pingSendingFmt, name, frames[i%len(frames)], elapsed(start))
+			label := name
+			if s := stage.Load().(string); s != "" {
+				label += " [" + s + "]"
+			}
+			fmt.Fprintf(out, text.pingSendingFmt, label, frames[i%len(frames)], elapsed(start))
 			i++
 		}
 	}
 }
 
 func report(out io.Writer, text cliText, name string, start time.Time, res *provider.TriggerResult, err error) {
+	defer reportVerification(out, text, res)
 	if err != nil {
 		fmt.Fprintf(out, text.pingFailedFmt, name, elapsed(start), localizedProviderError(text, err))
+		var completionErr *provider.CodexCompletionError
+		if errors.As(err, &completionErr) {
+			fmt.Fprintln(out, text.pingStartupHint)
+		}
 		return
 	}
-	fmt.Fprintf(out, text.pingSuccessFmt, name, elapsed(start), usageSuffix(res))
+	format := text.pingSuccessFmt
+	if res != nil && res.Verification != nil {
+		format = text.pingTriggerReturnedFmt
+		if res.TurnCompleted {
+			format = text.pingTurnCompletedFmt
+		}
+	}
+	fmt.Fprintf(out, format, name, elapsed(start), usageSuffix(res))
 }
 
 // usageSuffix renders the token/cost tail, e.g. ", 32,934 tok, $0.0110".

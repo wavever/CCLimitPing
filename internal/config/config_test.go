@@ -69,7 +69,7 @@ enabled = false
 		t.Fatal("claude.enabled = true, want the file's false to win")
 	}
 	// Untouched fields keep their defaults.
-	if cfg.Claude.Model != "haiku" || cfg.Codex.Model != "gpt-5.4-mini" || cfg.UsageDisplay != "used" {
+	if cfg.Claude.Model != "haiku" || cfg.Codex.Model != "gpt-5.6-luna" || cfg.UsageDisplay != "used" {
 		t.Fatalf("defaults not preserved: claude.model=%q codex.model=%q usage_display=%q",
 			cfg.Claude.Model, cfg.Codex.Model, cfg.UsageDisplay)
 	}

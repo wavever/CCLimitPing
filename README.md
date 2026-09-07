@@ -27,8 +27,8 @@ after the terminal closes.
 
 ```
 claude  ✓ pinged (6.6s)
-codex   ✓ pinged (13.6s)
-spark   ✓ pinged (12.4s)
+codex   ✓ turn completed (13.6s); quota start is checked separately
+spark   ✓ turn completed (12.4s); quota start is checked separately
 ```
 
 ## Highlights
@@ -111,6 +111,27 @@ and pings as soon as the window resets.
 
 Claude/Codex tokens are reused from the official tools (no separate login) and
 refreshed on 401. Spark reuses the Codex token.
+
+### Codex/Spark window verification
+
+At 0% usage, one quota API response cannot always tell whether a window has started.
+For example, compare these five-hour reset times:
+
+| Pattern (both show 0% used) | Read at 10:00 | Read at 10:01 |
+| --- | --- | --- |
+| Started: reset stays fixed | 15:00 | 15:00 |
+| Not started: reset slides forward | 15:00 | 15:01 |
+
+To distinguish these patterns, limitping compares reads at least one minute apart.
+Inconclusive results stay unconfirmed. `ping` returns without waiting that minute
+and suggests a later `status` check; `watch`/`bg` rechecks automatically.
+
+If the pre-ping quota check fails, both manual and automatic pings report the
+reason and stop without sending. Authentication reload/refresh on HTTP 401 is
+still attempted. Only the watcher waits before retrying: authentication/permission
+failures back off from 30 seconds to one hour; other read failures cap at ten
+minutes, with `Retry-After` respected. Restart the watcher to retry immediately
+after fixing access. Manual pings do not wait through this backoff.
 
 ## Install
 
@@ -226,16 +247,26 @@ Short aliases are also available for config commands: `limitping c i` for
 `ping` shows the exact command and a live timer (a spinner on a terminal).
 Current Claude/Codex/Spark interactive trigger sessions do not expose reliable
 machine-readable per-ping token or cost data, so success output normally shows
-elapsed time only:
+elapsed time. Codex/Spark report turn completion separately from quota-window
+verification (verification lines omitted here):
 
 ```
 claude  → claude --model haiku .
 claude  ✓ pinged (6.6s)
-codex   → codex -c model_reasoning_effort=low -m gpt-5.4-mini ok
-codex   ✓ pinged (13.6s)
-spark   → codex -c model_reasoning_effort=low -m gpt-5.3-codex-spark ok
-spark   ✓ pinged (12.4s)
+codex   → codex -c model_reasoning_effort=low -m gpt-5.6-luna -c tui.notifications=["agent-turn-complete"] -c tui.notification_method="osc9" -c tui.notification_condition="always" ok
+codex   ✓ turn completed (6.8s); quota start is checked separately
+spark   → codex -c model_reasoning_effort=low -m gpt-5.3-codex-spark -c tui.notifications=["agent-turn-complete"] -c tui.notification_method="osc9" -c tui.notification_condition="always" ok
+spark   ✓ turn completed (6.5s); quota start is checked separately
 ```
+
+For Codex/Spark, `limitping` automatically appends the `-c tui...` flags to
+enable turn-completion notifications and stop the TUI when one is received.
+A 45-second safety timeout remains; this does not verify quota-window activation.
+Without a completion notification, the attempt returns a nonzero exit status,
+including on timeout or clean process exit; process failures also remain errors.
+Timeouts and clean exits without a completion notification include a hint to
+rerun the command in a terminal with the same `CODEX_HOME` and check for startup
+confirmation dialogs. Watcher logs also include the command and `CODEX_HOME` setting.
 
 Use `status` or `bg status` for the authoritative 5h/weekly window view after a
 ping.
@@ -328,7 +359,7 @@ continue_prompt = "continue"  # message `continue` injects on 5h recovery; empty
 [codex]
 enabled          = true
 prompt           = "ok"
-model            = "gpt-5.4-mini"  # cheapest Codex model for triggering
+model            = "gpt-5.6-luna"  # cheapest Codex model for triggering
 reasoning_effort = "low"  # "minimal" is rejected when web_search/image_gen tools are enabled
 extra_args       = []     # extra Codex CLI args; exec-only flags such as --json are ignored
 align_start      = ""

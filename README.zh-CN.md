@@ -23,8 +23,8 @@ Claude Code、Codex 和 Spark 的订阅限额按 **5 小时滚动窗口**(外加
 
 ```
 claude  ✓ pinged (6.6s)
-codex   ✓ pinged (13.6s)
-spark   ✓ pinged (12.4s)
+codex   ✓ turn completed (13.6s); quota start is checked separately
+spark   ✓ turn completed (12.4s); quota start is checked separately
 ```
 
 ## 亮点
@@ -96,6 +96,25 @@ limitping bg logs -f
 
 Claude/Codex 的 token 直接复用官方工具(无需另外登录),遇到 401 会自动刷新。Spark 复用
 Codex token。
+
+### Codex/Spark 窗口验证
+
+用量为 0% 时，单次限额 API 响应不一定能判断窗口是否已启动。
+以下以五小时窗口的重置时间为例：
+
+| 情况（用量均为 0%） | 10:00 查询 | 10:01 查询 |
+| --- | --- | --- |
+| 已启动：重置时间固定 | 15:00 | 15:00 |
+| 未启动：重置时间向后滑动 | 15:00 | 15:01 |
+
+因此，limitping 会比较至少间隔一分钟的查询结果；证据不足时仍显示未确认。
+`ping` 不会等待这一分钟，而是提示稍后运行 `status`；`watch`/`bg` 会自动复查。
+
+发送前的限额检查失败时，手动和自动 ping 都会说明原因并停止，不发送请求。
+HTTP 401 仍会尝试重新加载或刷新凭据。只有 watcher 负责重试等待：
+认证或权限错误从 30 秒退避至最多一小时，其他读取错误最多十分钟，
+并遵守 `Retry-After`。修复访问权限后可重启 watcher 立即重试；
+手动 ping 不等待这些退避间隔。
 
 ## 安装
 
@@ -208,16 +227,21 @@ limitping uninstall            # 删除 limitping 以及配置/缓存(简称: rm
 | `uninstall` | `rm`、`remove` |
 
 `ping` 会显示具体命令和实时计时(终端下是 spinner)。当前 Claude/Codex/Spark 都用交互式
-触发,CLI 不提供可靠的逐次 machine-readable token/费用数据,所以成功输出通常只显示耗时:
+触发,CLI 不提供可靠的逐次 machine-readable token/费用数据,所以输出会显示耗时。Codex/Spark 会区分轮次完成和限额窗口启动确认（此处省略窗口确认行）:
 
 ```
 claude  → claude --model haiku .
 claude  ✓ pinged (6.6s)
-codex   → codex -c model_reasoning_effort=low -m gpt-5.4-mini ok
-codex   ✓ pinged (13.6s)
-spark   → codex -c model_reasoning_effort=low -m gpt-5.3-codex-spark ok
-spark   ✓ pinged (12.4s)
+codex   → codex -c model_reasoning_effort=low -m gpt-5.6-luna -c tui.notifications=["agent-turn-complete"] -c tui.notification_method="osc9" -c tui.notification_condition="always" ok
+codex   ✓ turn completed (6.8s); quota start is checked separately
+spark   → codex -c model_reasoning_effort=low -m gpt-5.3-codex-spark -c tui.notifications=["agent-turn-complete"] -c tui.notification_method="osc9" -c tui.notification_condition="always" ok
+spark   ✓ turn completed (6.5s); quota start is checked separately
 ```
+
+对于 Codex/Spark，`limitping` 会自动追加 `-c tui...` 参数，收到轮次完成通知后停止 TUI。
+仍保留 45 秒安全超时；这不代表已确认限额窗口启动。
+未收到完成通知时，即使进程正常退出，也会返回非零退出码；超时及进程错误同样按失败处理。
+完成通知超时或正常退出但未收到通知时，会提示使用相同的 `CODEX_HOME` 在终端重跑命令，检查启动确认对话框。监视器日志还会记录命令和 `CODEX_HOME` 设置。
 
 ping 后请用 `status` 或 `bg status` 查看权威的 5h/周窗口状态。
 
@@ -309,7 +333,7 @@ continue_prompt = "continue"  # continue 在 5h 恢复时注入的消息;留空 
 [codex]
 enabled          = true
 prompt           = "ok"
-model            = "gpt-5.4-mini"  # 用于触发的最便宜 Codex 模型
+model            = "gpt-5.6-luna"  # 用于触发的最便宜 Codex 模型
 reasoning_effort = "low"  # 启用 web_search/image_gen 工具时,"minimal" 会被拒绝
 extra_args       = []     # 额外 Codex CLI 参数;--json 等 exec-only 参数会被忽略
 align_start      = ""

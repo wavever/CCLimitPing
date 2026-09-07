@@ -6,10 +6,24 @@ import (
 )
 
 type cliText struct {
-	rootShort     string
-	rootLong      string
-	helpFlag      string
-	usageTemplate string
+	pingStartupHint     string
+	verifyAlreadyActive string
+	verifyQuotaStateFmt string
+	verifyStarted       string
+	verifyNotStarted    string
+	verifyUnknown       string
+	verifyStatusCheck   string
+	verifyRetryFmt      string
+	verifyRunning       string
+	verifyReady         string
+	verifyUnavailable   string
+	verifyDisabled      string
+	verifyNoBaseline    string
+	verifyCheckFmt      string
+	rootShort           string
+	rootLong            string
+	helpFlag            string
+	usageTemplate       string
 
 	helpCommandShort string
 	helpCommandLong  string
@@ -56,13 +70,15 @@ type cliText struct {
 	statusNowWord             string
 	statusWeekdays            [7]string // Sunday first; zero value = Go's "Mon" names
 
-	pingShort       string
-	pingLong        string
-	pingDryRunFlag  string
-	pingWouldRunFmt string // provider, command
-	pingSendingFmt  string // provider, spinner frame, elapsed
-	pingFailedFmt   string // provider, elapsed, error
-	pingSuccessFmt  string // provider, elapsed, usage suffix
+	pingShort              string
+	pingLong               string
+	pingDryRunFlag         string
+	pingWouldRunFmt        string // provider, command
+	pingSendingFmt         string // provider, spinner frame, elapsed
+	pingFailedFmt          string // provider, elapsed, error
+	pingSuccessFmt         string // provider, elapsed, usage suffix
+	pingTriggerReturnedFmt string
+	pingTurnCompletedFmt   string
 
 	watchShort             string
 	watchLong              string
@@ -186,9 +202,23 @@ func isChineseLocale() bool {
 }
 
 var enText = cliText{
-	rootShort: "Keep Claude Code / Codex / Spark rate-limit windows back-to-back",
-	rootLong:  "limitping pings your AI coding provider the moment its 5h rate-limit window resets, so the next window starts immediately and stays aligned. Usage is read via zero-quota endpoints; pings go through the official CLIs.",
-	helpFlag:  "help for this command",
+	pingStartupHint:     "  Hint: Codex may be waiting for a startup confirmation.\n  Run the command shown above in a terminal and check for confirmation dialogs.\n  Use the same CODEX_HOME as limitping.",
+	verifyAlreadyActive: "already active before ping",
+	verifyQuotaStateFmt: "  %s quota state: %s\n",
+	verifyStarted:       "window started",
+	verifyNotStarted:    "window not started (reset is an estimate)",
+	verifyUnknown:       "window start unconfirmed (reset is an estimate)",
+	verifyStatusCheck:   "Window start unconfirmed; run `limitping status` again in about a minute.",
+	verifyRetryFmt:      "Automatic ping retry eligible at %s.",
+	verifyRunning:       "Ping in progress.",
+	verifyReady:         "Window not started; eligible for automatic ping, subject to watcher checks.",
+	verifyUnavailable:   "Quota-window state unavailable; run `limitping status` again in about a minute.",
+	verifyDisabled:      "  This provider is disabled in config and will not appear in `limitping status`.",
+	verifyNoBaseline:    "  Run `limitping status` to collect a baseline, then check again after 60s.",
+	verifyCheckFmt:      "  Run `limitping status` after %s to recheck (no background check was scheduled by this command).\n",
+	rootShort:           "Keep Claude Code / Codex / Spark rate-limit windows back-to-back",
+	rootLong:            "limitping pings your AI coding provider the moment its 5h rate-limit window resets, so the next window starts immediately and stays aligned. Usage is read via zero-quota endpoints; pings go through the official CLIs.",
+	helpFlag:            "help for this command",
 	usageTemplate: `Usage:{{if .Runnable}}
   {{.UseLine}}{{end}}{{if .HasAvailableSubCommands}}
   {{.CommandPath}} [command]{{end}}{{if gt (len .Aliases) 0}}
@@ -272,11 +302,13 @@ Examples:
   limitping ping
   limitping p claude
   limitping ping codex --dry-run`,
-	pingDryRunFlag:  "print the command without sending",
-	pingWouldRunFmt: "%-7s would run: %s\n",
-	pingSendingFmt:  "\r%-7s %c sending… %s",
-	pingFailedFmt:   "%-7s ✗ failed after %s: %v\n",
-	pingSuccessFmt:  "%-7s ✓ pinged (%s%s)\n",
+	pingDryRunFlag:         "print the command without sending",
+	pingWouldRunFmt:        "%-7s would run: %s\n",
+	pingSendingFmt:         "\r%-7s %c sending… %s",
+	pingFailedFmt:          "%-7s ✗ failed after %s: %v\n",
+	pingSuccessFmt:         "%-7s ✓ pinged (%s%s)\n",
+	pingTriggerReturnedFmt: "%-7s CLI trigger returned without error (%s%s); turn completion is not verified\n",
+	pingTurnCompletedFmt:   "%-7s ✓ turn completed (%s%s); quota start is checked separately\n",
 
 	watchShort: "Run the foreground daemon and ping each provider when its 5h window resets",
 	watchLong: `Run the foreground daemon. When a provider's 5h window resets, limitping sends the minimal message to start the next window.
@@ -444,9 +476,23 @@ Examples:
 }
 
 var zhText = cliText{
-	rootShort: "让 Claude Code / Codex / Spark 的限额窗口自动接龙",
-	rootLong:  "limitping 会在 AI 编程 Provider 的 5h 限额窗口重置时立即发送 ping，让下一个窗口马上开始并保持对齐。用量读取走零消耗接口；ping 通过官方 CLI 发送。",
-	helpFlag:  "显示此命令的帮助",
+	pingStartupHint:     "  提示：Codex 可能正在等待启动确认。\n  请在终端运行上方命令，检查是否出现确认对话框。\n  使用与 limitping 相同的 CODEX_HOME。",
+	verifyAlreadyActive: "ping 前已启动",
+	verifyQuotaStateFmt: "  %s 限额状态：%s\n",
+	verifyStarted:       "窗口已启动",
+	verifyNotStarted:    "窗口未启动（重置时间为估计值）",
+	verifyUnknown:       "窗口启动尚未确认（重置时间为估计值）",
+	verifyStatusCheck:   "窗口启动尚未确认；请约一分钟后再次运行 `limitping status`。",
+	verifyRetryFmt:      "自动 ping 最早可于 %s 重试。",
+	verifyRunning:       "Ping 正在进行。",
+	verifyReady:         "窗口未启动；可尝试自动 ping，仍需通过监视器检查。",
+	verifyUnavailable:   "窗口状态不可用；请约一分钟后再次运行 `limitping status`。",
+	verifyDisabled:      "  此服务在配置中已禁用，不会出现在 `limitping status` 中。",
+	verifyNoBaseline:    "  运行 `limitping status` 采集基准，60 秒后再次检查。",
+	verifyCheckFmt:      "  %s 后运行 `limitping status` 再次检查（本命令未安排后台检查）。\n",
+	rootShort:           "让 Claude Code / Codex / Spark 的限额窗口自动接龙",
+	rootLong:            "limitping 会在 AI 编程 Provider 的 5h 限额窗口重置时立即发送 ping，让下一个窗口马上开始并保持对齐。用量读取走零消耗接口；ping 通过官方 CLI 发送。",
+	helpFlag:            "显示此命令的帮助",
 	usageTemplate: `用法:{{if .Runnable}}
   {{.UseLine}}{{end}}{{if .HasAvailableSubCommands}}
   {{.CommandPath}} [command]{{end}}{{if gt (len .Aliases) 0}}
@@ -532,11 +578,13 @@ var zhText = cliText{
   limitping ping
   limitping p claude
   limitping ping codex --dry-run`,
-	pingDryRunFlag:  "只打印将执行的命令，不真正发送",
-	pingWouldRunFmt: "%-7s 将执行: %s\n",
-	pingSendingFmt:  "\r%-7s %c 发送中… %s",
-	pingFailedFmt:   "%-7s ✗ 失败 (耗时 %s): %v\n",
-	pingSuccessFmt:  "%-7s ✓ 已 ping (%s%s)\n",
+	pingDryRunFlag:         "只打印将执行的命令，不真正发送",
+	pingWouldRunFmt:        "%-7s 将执行: %s\n",
+	pingSendingFmt:         "\r%-7s %c 发送中… %s",
+	pingFailedFmt:          "%-7s ✗ 失败 (耗时 %s): %v\n",
+	pingSuccessFmt:         "%-7s ✓ 已 ping (%s%s)\n",
+	pingTriggerReturnedFmt: "%-7s CLI 触发已返回且未报错（%s%s）；尚未验证轮次完成\n",
+	pingTurnCompletedFmt:   "%-7s ✓ 轮次已完成（%s%s）；限额窗口启动单独检查\n",
 
 	watchShort: "以前台守护方式运行，并在每个 Provider 的 5h 窗口重置时自动 ping",
 	watchLong: `以前台守护方式运行。某个 Provider 的 5h 窗口重置后，limitping 会发送最小消息来开启下一个窗口。

@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"unicode"
 
@@ -36,24 +38,32 @@ const (
 	codexAPIPath        = "/api/codex/usage"
 	codexUserAgent      = "limitping"
 	sparkDefaultModel   = "gpt-5.3-codex-spark"
+	codexTurnComplete   = "\x1b]9;"
+	codexTurnScanLimit  = 4096
 
 	// codexRedeemCooldown throttles the automatic redemption path so a
 	// once-a-minute poll loop cannot re-attempt a refused redemption every cycle.
 	codexRedeemCooldown = 15 * time.Minute
 
-	codexTurnMinWait  = 4 * time.Second
-	codexTurnQuiet    = 2500 * time.Millisecond
-	codexTurnMaxWait  = 45 * time.Second
-	codexExitGrace    = 5 * time.Second
-	codexPollInterval = 200 * time.Millisecond
+	codexTurnMaxWait = 45 * time.Second
+	codexExitGrace   = 5 * time.Second
 )
+
+type codexInteractiveTiming struct {
+	maxWait   time.Duration
+	exitGrace time.Duration
+}
+
+var defaultCodexInteractiveTiming = codexInteractiveTiming{
+	maxWait:   codexTurnMaxWait,
+	exitGrace: codexExitGrace,
+}
 
 // Codex reads usage via the ChatGPT backend usage endpoint and triggers windows
 // via the interactive, TTY-backed Codex CLI. Headless `codex exec` can consume
 // tokens without anchoring the subscription-backed Codex window.
 type Codex struct {
-	cfg  config.ProviderConfig
-	auth *auth.CodexAuth
+	cfg config.ProviderConfig
 
 	redeemMu   sync.Mutex
 	lastRedeem time.Time // last automatic redemption attempt, for the cooldown
@@ -61,8 +71,7 @@ type Codex struct {
 
 func NewCodex(cfg config.ProviderConfig) *Codex {
 	return &Codex{
-		cfg:  cfg,
-		auth: auth.NewCodexAuth(),
+		cfg: cfg,
 	}
 }
 
@@ -73,23 +82,16 @@ func (c *Codex) ActiveTask(ctx context.Context) (string, bool, error) {
 }
 
 func (c *Codex) ReadUsage(ctx context.Context) (*usage.Usage, error) {
-	body, r, err := readCodexUsage(ctx, c.auth)
-	if err != nil {
-		return nil, err
-	}
-	u := codexUsageToUsage(c.Name(), body, r, r.RateLimit)
-	if credits, err := readCodexResetCredits(ctx, c.auth); err == nil {
-		u.ResetCredits = credits
-	} else if r.ResetCredits != nil {
-		// The detail endpoint is private and may go away; the usage response
-		// itself now embeds the available count, so keep at least that.
-		u.ResetCredits = &usage.ResetCredits{AvailableCount: r.ResetCredits.AvailableCount}
-	}
-	return u, nil
+	u, _, err := readVerifiedUsage(ctx, c.Name(), c.cfg, true)
+	return u, err
 }
 
 func (c *Codex) Trigger(ctx context.Context, dryRun bool) (*TriggerResult, error) {
-	return triggerCodex(ctx, c.cfg, dryRun)
+	return pingVerified(ctx, c.Name(), c.cfg, dryRun, nil)
+}
+
+func (c *Codex) TriggerWithReservation(ctx context.Context, reserve PingReservation) (*TriggerResult, error) {
+	return pingVerified(ctx, c.Name(), c.cfg, false, reserve)
 }
 
 // RedeemResetCredit spends the next available reset credit right now. Each call
@@ -107,6 +109,9 @@ func (c *Codex) AutoRedeemResetCredit(ctx context.Context, u *usage.Usage) (stri
 	if !ok {
 		return "", nil
 	}
+	if u.QuotaAccount == "" {
+		return "", fmt.Errorf("automatic reset credit requires an identified quota observation")
+	}
 	c.redeemMu.Lock()
 	if time.Since(c.lastRedeem) < codexRedeemCooldown {
 		c.redeemMu.Unlock()
@@ -114,7 +119,7 @@ func (c *Codex) AutoRedeemResetCredit(ctx context.Context, u *usage.Usage) (stri
 	}
 	c.lastRedeem = time.Now()
 	c.redeemMu.Unlock()
-	return c.consumeResetCredit(ctx, creditIdempotencyKey(credit))
+	return c.consumeResetCreditFor(ctx, creditIdempotencyKey(credit), u.QuotaAccount)
 }
 
 // consumeResetCredit redeems one banked reset credit. The credit id is
@@ -122,12 +127,21 @@ func (c *Codex) AutoRedeemResetCredit(ctx context.Context, u *usage.Usage) (stri
 // same one the policy targets — so we don't depend on an id field this private
 // endpoint doesn't document.
 func (c *Codex) consumeResetCredit(ctx context.Context, idempotencyKey string) (string, error) {
+	return c.consumeResetCreditFor(ctx, idempotencyKey, "")
+}
+
+func (c *Codex) consumeResetCreditFor(ctx context.Context, idempotencyKey, expectedAccount string) (string, error) {
 	payload, err := json.Marshal(map[string]string{"idempotency_key": idempotencyKey})
 	if err != nil {
 		return "", err
 	}
-	accountID, _ := c.auth.AccountID(ctx)
-	body, err := fetchWithAuth(ctx, c.auth, func(token string) (*http.Request, error) {
+	a := auth.NewCodexAuth()
+	accountID := ""
+	body, err := fetchWithAuth(ctx, a, func(token string) (*http.Request, error) {
+		accountID, _ = a.AccountID(ctx)
+		if expectedAccount != "" && accountID != expectedAccount {
+			return nil, fmt.Errorf("Codex account changed; automatic reset credit cancelled")
+		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, codexConsumeURL(), bytes.NewReader(payload))
 		if err != nil {
 			return nil, err
@@ -155,7 +169,13 @@ func (c *Codex) consumeResetCredit(ctx context.Context, idempotencyKey string) (
 	if r.Code == "" {
 		return "", fmt.Errorf("codex reset credit consume: no outcome in response: %s", truncate(body, 200))
 	}
-	return normalizeRedeemOutcome(r.Code), nil
+	outcome := normalizeRedeemOutcome(r.Code)
+	if outcome == RedeemReset {
+		if store, err := quotaStore(); err == nil {
+			_ = store.Invalidate(accountID, "codex")
+		}
+	}
+	return outcome, nil
 }
 
 // normalizeRedeemOutcome folds the two spellings of the same outcomes into the
@@ -193,8 +213,7 @@ func creditIdempotencyKey(c usage.ResetCredit) string {
 // Spark is a separate provider backed by Codex auth and CLI transport.
 // Its usage window is the Spark-specific entry inside the Codex usage payload.
 type Spark struct {
-	cfg  config.ProviderConfig
-	auth *auth.CodexAuth
+	cfg config.ProviderConfig
 }
 
 // NewSpark returns the Spark provider. It shares Codex credentials and the
@@ -204,8 +223,7 @@ func NewSpark(cfg config.ProviderConfig) *Spark {
 		cfg.Model = sparkDefaultModel
 	}
 	return &Spark{
-		cfg:  cfg,
-		auth: auth.NewCodexAuth(),
+		cfg: cfg,
 	}
 }
 
@@ -216,19 +234,16 @@ func (s *Spark) ActiveTask(ctx context.Context) (string, bool, error) {
 }
 
 func (s *Spark) ReadUsage(ctx context.Context) (*usage.Usage, error) {
-	body, r, err := readCodexUsage(ctx, s.auth)
-	if err != nil {
-		return nil, err
-	}
-	rateLimit, err := sparkRateLimitFromResponse(r, s.cfg.Model)
-	if err != nil {
-		return nil, err
-	}
-	return codexUsageToUsage(s.Name(), body, r, rateLimit), nil
+	u, _, err := readVerifiedUsage(ctx, s.Name(), s.cfg, false)
+	return u, err
 }
 
 func (s *Spark) Trigger(ctx context.Context, dryRun bool) (*TriggerResult, error) {
-	return triggerCodex(ctx, s.cfg, dryRun)
+	return pingVerified(ctx, s.Name(), s.cfg, dryRun, nil)
+}
+
+func (s *Spark) TriggerWithReservation(ctx context.Context, reserve PingReservation) (*TriggerResult, error) {
+	return pingVerified(ctx, s.Name(), s.cfg, false, reserve)
 }
 
 func codexActiveTask(_ context.Context) (string, bool, error) {
@@ -298,9 +313,14 @@ type codexResetCredit struct {
 }
 
 func readCodexUsage(ctx context.Context, auth *auth.CodexAuth) ([]byte, codexUsageResp, error) {
+	// Codex quota retries belong to the watcher. Immediate 401 recovery remains.
+	ctx = context.WithValue(ctx, noUsageRetryKey{}, true)
 	var r codexUsageResp
-	accountID, _ := auth.AccountID(ctx)
+	if _, err := auth.Token(ctx); err != nil {
+		return nil, r, &AuthenticationError{Err: err}
+	}
 	body, err := fetchWithAuth(ctx, auth, func(token string) (*http.Request, error) {
+		accountID, _ := auth.AccountID(ctx)
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, codexUsageURL(), nil)
 		if err != nil {
 			return nil, err
@@ -325,8 +345,8 @@ func readCodexUsage(ctx context.Context, auth *auth.CodexAuth) ([]byte, codexUsa
 
 func readCodexResetCredits(ctx context.Context, auth *auth.CodexAuth) (*usage.ResetCredits, error) {
 	var r codexResetCreditsResp
-	accountID, _ := auth.AccountID(ctx)
 	body, err := fetchWithAuth(ctx, auth, func(token string) (*http.Request, error) {
+		accountID, _ := auth.AccountID(ctx)
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, codexResetCreditsURL(), nil)
 		if err != nil {
 			return nil, err
@@ -551,6 +571,10 @@ func codexWindowToUsage(w codexWindow) usage.Window {
 }
 
 func triggerCodex(ctx context.Context, cfg config.ProviderConfig, dryRun bool) (*TriggerResult, error) {
+	return triggerCodexWithTiming(ctx, cfg, dryRun, defaultCodexInteractiveTiming)
+}
+
+func triggerCodexWithTiming(ctx context.Context, cfg config.ProviderConfig, dryRun bool, timing codexInteractiveTiming) (*TriggerResult, error) {
 	prompt := cfg.Prompt
 	if prompt == "" {
 		prompt = "ok"
@@ -563,6 +587,13 @@ func triggerCodex(ctx context.Context, cfg config.ProviderConfig, dryRun bool) (
 		args = append(args, "-m", cfg.Model)
 	}
 	args = append(args, codexInteractiveArgs(cfg.ExtraArgs)...)
+	// A PTY is always treated as focused, so force Codex's turn-complete OSC 9
+	// notification and use it as the exact boundary before stopping the TUI.
+	args = append(args,
+		"-c", `tui.notifications=["agent-turn-complete"]`,
+		"-c", `tui.notification_method="osc9"`,
+		"-c", `tui.notification_condition="always"`,
+	)
 	args = append(args, prompt)
 	res := &TriggerResult{Command: "codex " + shellJoin(args)}
 	if dryRun {
@@ -570,6 +601,9 @@ func triggerCodex(ctx context.Context, cfg config.ProviderConfig, dryRun bool) (
 	}
 
 	cmd := exec.CommandContext(ctx, "codex", args...)
+	if term := os.Getenv("TERM"); term == "" || term == "dumb" {
+		cmd.Env = append(cmd.Environ(), "TERM=xterm-256color")
+	}
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
 		return res, fmt.Errorf("codex interactive failed to start: %w", err)
@@ -577,8 +611,11 @@ func triggerCodex(ctx context.Context, cfg config.ProviderConfig, dryRun bool) (
 	defer ptmx.Close()
 
 	output := &limitedBuffer{limit: 4096}
+	markers := newCodexTurnMarkers()
+	readDone := make(chan struct{})
 	go func() {
-		_, _ = io.Copy(output, ptmx)
+		defer close(readDone)
+		_, _ = io.Copy(io.MultiWriter(output, markers), ptmx)
 	}()
 
 	done := make(chan error, 1)
@@ -586,41 +623,89 @@ func triggerCodex(ctx context.Context, cfg config.ProviderConfig, dryRun bool) (
 		done <- cmd.Wait()
 	}()
 
-	if terminal, err := codexAwait(ctx, cmd, ptmx, output, done, codexTurnMaxWait,
-		func(idle, elapsed time.Duration) bool {
-			return elapsed >= codexTurnMinWait && idle >= codexTurnQuiet
-		}); terminal {
+	terminal, completed, err := codexAwait(ctx, cmd, ptmx, output, markers.completed, readDone, done, timing.maxWait)
+	res.TurnCompleted = completed
+	if terminal {
+		if ctx.Err() != nil {
+			err = ctx.Err()
+		}
 		return res, err
 	}
-
-	return res, codexInteractiveStop(ctx, cmd, ptmx, done, output)
+	stopErr := codexInteractiveStop(ctx, cmd, ptmx, done, output, timing.exitGrace)
+	if ctx.Err() != nil {
+		return res, ctx.Err()
+	}
+	if err != nil {
+		return res, err
+	}
+	return res, stopErr
 }
 
-func codexAwait(ctx context.Context, cmd *exec.Cmd, ptmx *os.File, output *limitedBuffer, done <-chan error, maxWait time.Duration, ready func(idle, elapsed time.Duration) bool) (bool, error) {
-	start := time.Now()
-	deadline := time.After(maxWait)
-	ticker := time.NewTicker(codexPollInterval)
-	defer ticker.Stop()
-	for {
+type codexTurnMarkers struct {
+	buf       []byte
+	finished  bool
+	completed chan struct{}
+}
+
+func newCodexTurnMarkers() *codexTurnMarkers {
+	return &codexTurnMarkers{completed: make(chan struct{})}
+}
+
+func (m *codexTurnMarkers) Write(p []byte) (int, error) {
+	if m.finished {
+		return len(p), nil
+	}
+	m.buf = append(m.buf, p...)
+	if start := bytes.Index(m.buf, []byte(codexTurnComplete)); start >= 0 && bytes.IndexByte(m.buf[start:], 0x07) >= 0 {
+		close(m.completed)
+		m.finished = true
+		m.buf = nil
+	}
+	if len(m.buf) > codexTurnScanLimit {
+		m.buf = append(m.buf[:0], m.buf[len(m.buf)-codexTurnScanLimit:]...)
+	}
+	return len(p), nil
+}
+
+func codexAwait(ctx context.Context, cmd *exec.Cmd, ptmx *os.File, output *limitedBuffer, completed, readDone <-chan struct{}, done <-chan error, maxWait time.Duration) (terminal, turnCompleted bool, err error) {
+	select {
+	case <-completed:
+		return false, true, nil
+	case err := <-done:
+		// Process exit can win the select before the PTY reader sees its tail.
 		select {
-		case err := <-done:
-			return true, codexInteractiveErr(err, output)
+		case <-readDone:
 		case <-ctx.Done():
-			return true, codexInteractiveCancel(ctx, cmd, ptmx, done, output)
-		case <-deadline:
-			return false, nil
-		case <-ticker.C:
-			changed := output.changedAt()
-			if !changed.IsZero() && ready(time.Since(changed), time.Since(start)) {
-				return false, nil
-			}
+		case <-time.After(100 * time.Millisecond):
 		}
+		select {
+		case <-completed:
+			turnCompleted = true
+		default:
+		}
+		if err != nil {
+			return true, turnCompleted, codexInteractiveErr(err, output)
+		}
+		if !turnCompleted {
+			return true, false, &CodexCompletionError{Reason: "codex exited without a turn-completion notification; completion unconfirmed"}
+		}
+		return true, true, nil
+	case <-ctx.Done():
+		return true, false, codexInteractiveCancel(ctx, cmd, ptmx, done, output)
+	case <-time.After(maxWait):
+		return false, false, &CodexCompletionError{Reason: fmt.Sprintf("codex turn-completion notification timed out after %s", maxWait)}
 	}
 }
 
-func codexInteractiveStop(ctx context.Context, cmd *exec.Cmd, ptmx *os.File, done <-chan error, output *limitedBuffer) error {
-	deadline := time.After(codexExitGrace)
-	ticker := time.NewTicker(codexExitGrace / 2)
+func codexInteractiveStop(ctx context.Context, cmd *exec.Cmd, ptmx *os.File, done <-chan error, output *limitedBuffer, exitGrace time.Duration) error {
+	// Preserve an exit already observed before requesting intentional shutdown.
+	select {
+	case err := <-done:
+		return codexInteractiveErr(err, output)
+	default:
+	}
+	deadline := time.After(exitGrace)
+	ticker := time.NewTicker(exitGrace / 2)
 	defer ticker.Stop()
 
 	for sent := false; ; {
@@ -629,23 +714,45 @@ func codexInteractiveStop(ctx context.Context, cmd *exec.Cmd, ptmx *os.File, don
 			sent = true
 		}
 		select {
-		case <-done:
-			return nil
+		case err := <-done:
+			return codexShutdownErr(err, output)
 		case <-ctx.Done():
 			return codexInteractiveCancel(ctx, cmd, ptmx, done, output)
 		case <-ticker.C:
 			_, _ = ptmx.Write([]byte{0x03})
 		case <-deadline:
+			killed := false
 			if cmd.Process != nil {
-				_ = cmd.Process.Kill()
+				killed = cmd.Process.Kill() == nil
 			}
 			select {
-			case <-done:
+			case err := <-done:
+				var exitErr *exec.ExitError
+				if killed && errors.As(err, &exitErr) {
+					if status, ok := exitErr.Sys().(syscall.WaitStatus); ok && status.Signaled() && status.Signal() == syscall.SIGKILL {
+						return nil
+					}
+				}
+				return codexShutdownErr(err, output)
 			case <-time.After(time.Second):
 			}
 			return nil
 		}
 	}
+}
+
+func codexShutdownErr(err error, output *limitedBuffer) error {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		// Ctrl-C is expected after completion; other failures remain failures.
+		if exitErr.ExitCode() == 130 {
+			return nil
+		}
+		if status, ok := exitErr.Sys().(syscall.WaitStatus); ok && status.Signaled() && status.Signal() == syscall.SIGINT {
+			return nil
+		}
+	}
+	return codexInteractiveErr(err, output)
 }
 
 func codexInteractiveErr(err error, output *limitedBuffer) error {

@@ -82,7 +82,7 @@ func Default() Config {
 		Codex: ProviderConfig{
 			Enabled:         true,
 			Prompt:          "ok",
-			Model:           "gpt-5.4-mini",
+			Model:           "gpt-5.6-luna",
 			ReasoningEffort: "low",
 			ContinuePrompt:  "continue",
 		},
@@ -209,7 +209,7 @@ enabled = true
 prompt = "ok"
 # Cheapest Codex model for triggering (see ~/.codex/models_cache.json for the
 # list available to your plan). Empty = use the Codex default model.
-model = "gpt-5.4-mini"
+model = "gpt-5.6-luna"
 # "low" keeps the ping cheap; "minimal" is rejected when web_search/image_gen
 # tools are enabled in your Codex config.
 reasoning_effort = "low"

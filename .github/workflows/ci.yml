@@ -6,6 +6,29 @@ on:
   pull_request:
 
 jobs:
+  codex-pty-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Detect Codex completion notification through a PTY
+        run: go test -race -count=1 -v ./internal/provider -run '^TestCodexTriggerWaitsForTurnCompleteNotification$'
+
+
+  quota-state-platforms:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go test ./internal/codexstate
+
   build:
     runs-on: ubuntu-latest
     steps:

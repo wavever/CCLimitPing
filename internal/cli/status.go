@@ -48,6 +48,7 @@ func runStatus(ctx context.Context, out, progress io.Writer, text cliText, provi
 		progress = io.Discard
 	}
 	display = normalizeUsageDisplay(display)
+	diagnostics := progress
 	// In JSON mode keep stdout a single valid document: suppress the
 	// "Fetching..." progress chatter that would otherwise interleave.
 	if jsonOut {
@@ -72,6 +73,9 @@ func runStatus(ctx context.Context, out, progress io.Writer, text cliText, provi
 			continue
 		}
 		if jsonOut {
+			if u.Verification != nil && u.Verification.Warning != "" {
+				fmt.Fprintln(diagnostics, u.Verification.Warning)
+			}
 			entries = append(entries, newStatusJSON(u, verbose))
 			continue
 		}
@@ -115,12 +119,14 @@ type statusJSON struct {
 }
 
 type windowJSON struct {
-	UsedPercent      float64 `json:"used_percent"`
-	RemainingPercent float64 `json:"remaining_percent"`
-	Active           bool    `json:"active"`
-	ResetsAt         string  `json:"resets_at,omitempty"`
-	RemainingSeconds int     `json:"remaining_seconds"`
-	WindowSeconds    int     `json:"window_seconds,omitempty"`
+	UsedPercent       float64 `json:"used_percent"`
+	RemainingPercent  float64 `json:"remaining_percent"`
+	Active            bool    `json:"active"`
+	ResetsAt          string  `json:"resets_at,omitempty"`
+	RemainingSeconds  int     `json:"remaining_seconds"`
+	WindowSeconds     int     `json:"window_seconds,omitempty"`
+	StartState        string  `json:"start_state,omitempty"`
+	VerificationDueAt string  `json:"verification_due_at,omitempty"`
 }
 
 type creditsJSON struct {
@@ -155,6 +161,10 @@ func newStatusJSON(u *usage.Usage, verbose bool) statusJSON {
 	if !u.Weekly.Missing() {
 		s.Weekly = newWindowJSON(u.Weekly)
 	}
+	if u.Verification != nil {
+		addStartJSON(s.FiveHour, u.Verification.FiveHour)
+		addStartJSON(s.Weekly, u.Verification.Weekly)
+	}
 	if !u.FetchedAt.IsZero() {
 		s.FetchedAt = u.FetchedAt.Format(time.RFC3339)
 	}
@@ -172,6 +182,16 @@ func newStatusJSON(u *usage.Usage, verbose bool) statusJSON {
 		s.Raw = json.RawMessage(u.Raw)
 	}
 	return s
+}
+
+func addStartJSON(w *windowJSON, s usage.StartStatus) {
+	if w == nil {
+		return
+	}
+	w.StartState = s.State
+	if !s.DueAt.IsZero() {
+		w.VerificationDueAt = s.DueAt.Format(time.RFC3339)
+	}
 }
 
 func newWindowJSON(w usage.Window) *windowJSON {
@@ -218,8 +238,34 @@ func printUsage(out io.Writer, text cliText, u *usage.Usage, verbose bool, displ
 		plan = " (" + plan + ")"
 	}
 	fmt.Fprintf(out, "%s%s\n", u.Provider, plan)
-	fmt.Fprintf(out, text.statusFiveHourLineFmt, fmtWindow(text, u.FiveHour, display))
-	fmt.Fprintf(out, text.statusWeeklyLineFmt, fmtWindow(text, u.Weekly, display))
+	five, week := fmtWindow(text, u.FiveHour, display), fmtWindow(text, u.Weekly, display)
+	if v := u.Verification; v != nil {
+		if !u.FiveHour.Missing() {
+			five += " — " + startDescription(text, v.FiveHour)
+		}
+		if !u.Weekly.Missing() {
+			week += " — " + startDescription(text, v.Weekly)
+		}
+	}
+	fmt.Fprintf(out, text.statusFiveHourLineFmt, five)
+	fmt.Fprintf(out, text.statusWeeklyLineFmt, week)
+	if v := u.Verification; v != nil {
+		switch v.Recovery {
+		case "verifying":
+			fmt.Fprintln(out, "  "+text.verifyStatusCheck)
+		case "backoff", "cooldown":
+			fmt.Fprintf(out, "  "+text.verifyRetryFmt+"\n", fmtClock(text, v.NextEligible))
+		case "ping_running":
+			fmt.Fprintln(out, "  "+text.verifyRunning)
+		case "ready":
+			fmt.Fprintln(out, "  "+text.verifyReady)
+		case "unavailable":
+			fmt.Fprintln(out, "  "+text.verifyUnavailable)
+		}
+		if v.Warning != "" {
+			fmt.Fprintln(out, "  "+v.Warning)
+		}
+	}
 	if u.Credits != nil && (u.Credits.HasCredits || u.Credits.Unlimited) {
 		if u.Credits.Unlimited {
 			fmt.Fprint(out, text.statusCreditsUnlimited)
