@@ -473,14 +473,11 @@ func parseCodexModel(contents string) string {
 }
 
 func codexConfigPath() string {
-	if h := os.Getenv("CODEX_HOME"); h != "" {
-		return filepath.Join(h, "config.toml")
-	}
-	home, err := os.UserHomeDir()
+	dir, err := auth.CodexHome()
 	if err != nil {
 		return filepath.Join(".codex", "config.toml")
 	}
-	return filepath.Join(home, ".codex", "config.toml")
+	return filepath.Join(dir, "config.toml")
 }
 
 func codexModelsCachePath() string {

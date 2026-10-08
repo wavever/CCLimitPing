@@ -6,6 +6,8 @@ package auth
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -14,6 +16,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 )
@@ -24,9 +27,84 @@ import (
 const claudeOAuthClientID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 
 const (
-	claudeKeychainService = "Claude Code-credentials"
-	claudeTokenEndpoint   = "https://console.anthropic.com/v1/oauth/token"
+	claudeKeychainServiceBase = "Claude Code-credentials"
+	// Claude Code refreshes against platform.claude.com since 2.1.2xx; the old
+	// console.anthropic.com address still answers, but only for now.
+	claudeTokenEndpoint = "https://platform.claude.com/v1/oauth/token"
 )
+
+// ClaudeConfigDir is the directory Claude Code keeps its user config in:
+// $CLAUDE_CONFIG_DIR when set, else ~/.claude. settings.json, the plaintext
+// credentials file and the transcripts all live under it.
+func ClaudeConfigDir() (string, error) {
+	if dir := strings.TrimSpace(os.Getenv("CLAUDE_CONFIG_DIR")); dir != "" {
+		return dir, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".claude"), nil
+}
+
+// ClaudeGlobalConfigPath is Claude Code's global config file, .claude.json,
+// which holds the login's account and organization. Unlike settings.json it
+// sits in the home directory itself, not in ~/.claude — unless
+// $CLAUDE_CONFIG_DIR is set, which moves it there.
+func ClaudeGlobalConfigPath() (string, error) {
+	dir := strings.TrimSpace(os.Getenv("CLAUDE_CONFIG_DIR"))
+	if dir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		dir = home
+	}
+	return filepath.Join(dir, ".claude.json"), nil
+}
+
+// claudeSecureStorageDir is where Claude Code keys its credentials, which is
+// the config dir unless CLAUDE_SECURESTORAGE_CONFIG_DIR overrides it (an empty
+// override means the default ~/.claude). custom reports whether the location
+// is anything but the default, since only then does the Keychain entry get a
+// per-directory name.
+func claudeSecureStorageDir() (dir string, custom bool, err error) {
+	if v, ok := os.LookupEnv("CLAUDE_SECURESTORAGE_CONFIG_DIR"); ok {
+		if v == "" {
+			home, herr := os.UserHomeDir()
+			if herr != nil {
+				return "", false, herr
+			}
+			return filepath.Join(home, ".claude"), false, nil
+		}
+		return v, true, nil
+	}
+	custom = strings.TrimSpace(os.Getenv("CLAUDE_CONFIG_DIR")) != ""
+	dir, err = ClaudeConfigDir()
+	return dir, custom, err
+}
+
+// claudeKeychainService names the Keychain item the way Claude Code does: a
+// non-default config dir gets its own item, suffixed with a hash of the dir,
+// so several Claude Code installs never share one login.
+func claudeKeychainService() string {
+	dir, custom, err := claudeSecureStorageDir()
+	if err != nil || !custom {
+		return claudeKeychainServiceBase
+	}
+	sum := sha256.Sum256([]byte(dir))
+	return claudeKeychainServiceBase + "-" + hex.EncodeToString(sum[:])[:8]
+}
+
+// claudeCredentialsPath is the plaintext store Claude Code falls back to off
+// macOS (and on macOS when the Keychain is unavailable).
+func claudeCredentialsPath() (string, error) {
+	dir, _, err := claudeSecureStorageDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, ".credentials.json"), nil
+}
 
 // authHTTPClient performs the OAuth refresh requests; swapped in tests (the
 // same seam the provider package uses for its usage client).
@@ -172,23 +250,23 @@ func (a *ClaudeAuth) persistLocked(expiresIn int64) {
 // readClaudeBlob returns the raw credentials JSON and (on macOS) the Keychain
 // account name for write-back.
 func readClaudeBlob() (raw []byte, account string, err error) {
+	service := claudeKeychainService()
 	if claudeKeychainEnabled {
 		out, err := exec.Command("security", "find-generic-password",
-			"-s", claudeKeychainService, "-w").Output()
+			"-s", service, "-w").Output()
 		if err == nil && len(bytes.TrimSpace(out)) > 0 {
-			return bytes.TrimSpace(out), keychainAccount(), nil
+			return bytes.TrimSpace(out), keychainAccount(service), nil
 		}
 		// fall through to file fallback
 	}
-	home, herr := os.UserHomeDir()
-	if herr != nil {
-		return nil, "", herr
+	path, perr := claudeCredentialsPath()
+	if perr != nil {
+		return nil, "", perr
 	}
-	path := filepath.Join(home, ".claude", ".credentials.json")
 	b, ferr := os.ReadFile(path)
 	if ferr != nil {
 		if claudeKeychainEnabled {
-			return nil, "", fmt.Errorf("claude credentials not found in Keychain (%q) or %s", claudeKeychainService, path)
+			return nil, "", fmt.Errorf("claude credentials not found in Keychain (%q) or %s", service, path)
 		}
 		return nil, "", fmt.Errorf("claude credentials not found at %s: %w", path, ferr)
 	}
@@ -199,9 +277,9 @@ var acctRe = regexp.MustCompile(`"acct"<blob>="([^"]*)"`)
 
 // keychainAccount reads the account field of the Claude Code credentials item
 // so we can update (not duplicate) it on write-back.
-func keychainAccount() string {
+func keychainAccount(service string) string {
 	out, err := exec.Command("security", "find-generic-password",
-		"-s", claudeKeychainService).CombinedOutput()
+		"-s", service).CombinedOutput()
 	if err != nil {
 		return ""
 	}
@@ -213,16 +291,15 @@ func keychainAccount() string {
 
 func writeClaudeBlob(blob []byte, account string) error {
 	if claudeKeychainEnabled {
-		args := []string{"add-generic-password", "-U", "-s", claudeKeychainService, "-w", string(blob)}
+		args := []string{"add-generic-password", "-U", "-s", claudeKeychainService(), "-w", string(blob)}
 		if account != "" {
 			args = append(args, "-a", account)
 		}
 		return exec.Command("security", args...).Run()
 	}
-	home, err := os.UserHomeDir()
+	path, err := claudeCredentialsPath()
 	if err != nil {
 		return err
 	}
-	path := filepath.Join(home, ".claude", ".credentials.json")
 	return os.WriteFile(path, blob, 0o600)
 }

@@ -98,7 +98,8 @@ the window resets.
 
 - **Claude**: reads `GET https://api.anthropic.com/api/oauth/usage` using the
   OAuth token from the macOS Keychain (`Claude Code-credentials`) or
-  `~/.claude/.credentials.json`. Triggering uses a TTY-backed interactive
+  `~/.claude/.credentials.json` — or wherever `CLAUDE_CONFIG_DIR` points, as
+  Claude Code itself does. Triggering uses a TTY-backed interactive
   `claude "<prompt>"` session, so it continues to start the Claude
   subscription-backed window after the headless print command moves to Agent
   SDK/API credits. If the usage endpoint returns an ambiguous 429, limitping

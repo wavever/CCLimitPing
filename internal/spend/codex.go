@@ -4,11 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
+	"github.com/wavever/CCLimitPing/internal/auth"
 	"github.com/wavever/CCLimitPing/internal/pricing"
 )
 
@@ -150,12 +149,9 @@ func readCodexFile(path string, start, end time.Time) ([]codexRecord, error) {
 // codexSessionsDir returns the rollout directory: $CODEX_HOME/sessions, else
 // ~/.codex/sessions.
 func codexSessionsDir() string {
-	if home := strings.TrimSpace(os.Getenv("CODEX_HOME")); home != "" {
-		return filepath.Join(home, "sessions")
-	}
-	home, err := os.UserHomeDir()
+	dir, err := auth.CodexHome()
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(home, ".codex", "sessions")
+	return filepath.Join(dir, "sessions")
 }

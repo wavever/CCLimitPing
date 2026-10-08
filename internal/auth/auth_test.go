@@ -2,6 +2,8 @@ package auth
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -179,6 +181,8 @@ func writeClaudeCreds(t *testing.T, contents string) string {
 
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	t.Setenv("CLAUDE_SECURESTORAGE_CONFIG_DIR", "")
 	dir := filepath.Join(home, ".claude")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
@@ -289,4 +293,38 @@ func TestClaudeRefreshFailsWithoutRefreshToken(t *testing.T) {
 	if _, err := NewClaudeAuth().Refresh(context.Background()); err == nil {
 		t.Fatal("Refresh succeeded without a refresh token")
 	}
+}
+
+func TestClaudeKeychainServiceFollowsConfigDir(t *testing.T) {
+	t.Setenv("CLAUDE_SECURESTORAGE_CONFIG_DIR", "")
+	os.Unsetenv("CLAUDE_SECURESTORAGE_CONFIG_DIR")
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	if got := claudeKeychainService(); got != "Claude Code-credentials" {
+		t.Fatalf("default service = %q", got)
+	}
+
+	// Claude Code names a non-default config dir's item after the first 8 hex
+	// digits of the dir's SHA-256, so two installs never share a login.
+	t.Setenv("CLAUDE_CONFIG_DIR", "/tmp/claude-work")
+	if got := claudeKeychainService(); got != "Claude Code-credentials-"+sha8("/tmp/claude-work") {
+		t.Fatalf("config-dir service = %q", got)
+	}
+	if path, _ := claudeCredentialsPath(); path != filepath.Join("/tmp/claude-work", ".credentials.json") {
+		t.Fatalf("credentials path = %q", path)
+	}
+
+	// The secure-storage override wins, and an empty one means the default.
+	t.Setenv("CLAUDE_SECURESTORAGE_CONFIG_DIR", "/tmp/claude-secure")
+	if got := claudeKeychainService(); got != "Claude Code-credentials-"+sha8("/tmp/claude-secure") {
+		t.Fatalf("secure-storage service = %q", got)
+	}
+	t.Setenv("CLAUDE_SECURESTORAGE_CONFIG_DIR", "")
+	if got := claudeKeychainService(); got != "Claude Code-credentials" {
+		t.Fatalf("empty secure-storage override service = %q", got)
+	}
+}
+
+func sha8(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])[:8]
 }

@@ -84,7 +84,8 @@ limitping bg logs -f
 未安装钩子时,`limitping` 会跳过该检查,窗口一重置就直接 ping(绝不靠扫描进程来猜)。
 
 - **Claude**:用 macOS 钥匙串(`Claude Code-credentials`)或 `~/.claude/.credentials.json`
-  里的 OAuth token,读 `GET https://api.anthropic.com/api/oauth/usage`。触发使用带
+  (设置了 `CLAUDE_CONFIG_DIR` 时与 Claude Code 一样改用该目录)里的 OAuth token,读
+  `GET https://api.anthropic.com/api/oauth/usage`。触发使用带
   TTY 的交互式 `claude "<prompt>"` 会话,因此在 headless print 命令改走 Agent
   SDK/API credits 后仍会起算 Claude 订阅窗口。如果用量端点返回语义不明的
   429,limitping 会调用免费且不创建 Message 的 token-counting 端点,区分真实的

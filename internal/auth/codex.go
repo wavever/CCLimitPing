@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -117,15 +118,26 @@ func (a *CodexAuth) Refresh(ctx context.Context) (string, error) {
 	return a.access, nil
 }
 
-func codexAuthPath() (string, error) {
-	if h := os.Getenv("CODEX_HOME"); h != "" {
-		return filepath.Join(h, "auth.json"), nil
+// CodexHome is the directory the Codex CLI keeps its state in: $CODEX_HOME when
+// set, else ~/.codex. auth.json, config.toml, hooks.json and the session
+// rollouts all live under it.
+func CodexHome() (string, error) {
+	if h := strings.TrimSpace(os.Getenv("CODEX_HOME")); h != "" {
+		return h, nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".codex", "auth.json"), nil
+	return filepath.Join(home, ".codex"), nil
+}
+
+func codexAuthPath() (string, error) {
+	dir, err := CodexHome()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "auth.json"), nil
 }
 
 func (a *CodexAuth) loadLocked() error {
