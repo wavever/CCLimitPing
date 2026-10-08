@@ -373,14 +373,14 @@ func truncate(b []byte, n int) string {
 	return string(b[:n]) + "…"
 }
 
-// shellJoin renders args for display/logging, quoting any that contain spaces.
+// shellJoin renders args for display/logging, quoting any a shell would split.
 func shellJoin(args []string) string {
 	out := ""
 	for i, a := range args {
 		if i > 0 {
 			out += " "
 		}
-		if a == "" || containsSpace(a) {
+		if a == "" || needsShellQuoting(a) {
 			out += fmt.Sprintf("%q", a)
 		} else {
 			out += a
@@ -389,11 +389,8 @@ func shellJoin(args []string) string {
 	return out
 }
 
-func containsSpace(s string) bool {
-	for _, r := range s {
-		if r == ' ' || r == '\t' || r == '\n' {
-			return true
-		}
-	}
-	return false
+// needsShellQuoting reports whether a shell would not read s back as one
+// literal word: whitespace, quotes and the metacharacters a JSON value carries.
+func needsShellQuoting(s string) bool {
+	return strings.ContainsAny(s, " \t\n\"'{}$*?;&|<>()`\\")
 }

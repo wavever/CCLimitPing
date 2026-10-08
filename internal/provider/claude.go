@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -53,6 +54,9 @@ const (
 	claudeTurnMaxWait    = 45 * time.Second
 	claudeExitGrace      = 5 * time.Second
 	claudePollInterval   = 200 * time.Millisecond
+	// claudeTranscriptWait bounds how long the ping waits for a killed session
+	// to exit before deleting its transcript.
+	claudeTranscriptWait = 5 * time.Second
 )
 
 var (
@@ -97,14 +101,20 @@ func NewClaude(cfg config.ProviderConfig) *Claude {
 
 func (c *Claude) Name() string { return "claude" }
 
-func (c *Claude) ActiveTask(_ context.Context) (string, bool, error) {
-	// Active-session detection relies entirely on the CLI hooks (see `limitping
-	// hooks install`). Without them we don't guess from the process list — the
-	// scheduler just pings.
-	if !activity.Enabled("claude") {
+func (c *Claude) ActiveTask(ctx context.Context) (string, bool, error) {
+	// The CLI hooks (see `limitping hooks install`) are the primary signal.
+	// Without them, Claude Code's own session list says which sessions are
+	// mid-turn; a Claude Code too old to have one leaves the scheduler to just
+	// ping. Neither guesses from the process list.
+	if activity.Enabled("claude") {
+		return activity.Active("claude")
+	}
+	sessions, err := ClaudeSessions(ctx)
+	if err != nil {
 		return "", false, nil
 	}
-	return activity.Active("claude")
+	desc, busy := claudeBusySession(sessions)
+	return desc, busy, nil
 }
 
 type claudeWindow struct {
@@ -381,8 +391,17 @@ func (c *Claude) Trigger(ctx context.Context, dryRun bool) (*TriggerResult, erro
 	if c.cfg.Model != "" {
 		args = append(args, "--model", c.cfg.Model)
 	}
-	args = append(args, claudeInteractiveArgs(c.cfg.ExtraArgs)...)
-	args = append(args, prompt)
+	extra := claudeInteractiveArgs(c.cfg.ExtraArgs)
+	sessionID := newClaudeSessionID()
+	isolation := claudePingIsolationArgs(sessionID, extra)
+	if !slices.Contains(isolation, "--session-id") {
+		sessionID = "" // not ours to name, so not ours to delete
+	}
+	args = append(args, isolation...)
+	args = append(args, extra...)
+	// "--" ends the options so no variadic one (--tools, --allowedTools, …)
+	// swallows the prompt as one more value; it would then never be sent.
+	args = append(args, "--", prompt)
 
 	// An unset model leaves Model empty: Claude Code resolves its own default
 	// from settings precedence limitping does not reproduce, and guessing would
@@ -393,6 +412,7 @@ func (c *Claude) Trigger(ctx context.Context, dryRun bool) (*TriggerResult, erro
 	}
 
 	cmd := exec.CommandContext(ctx, "claude", args...)
+	cmd.Env = append(os.Environ(), claudePingEnv)
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
 		return res, fmt.Errorf("claude interactive failed to start: %w", err)
@@ -405,8 +425,20 @@ func (c *Claude) Trigger(ctx context.Context, dryRun bool) (*TriggerResult, erro
 	}()
 
 	done := make(chan error, 1)
+	exited := make(chan struct{})
 	go func() {
 		done <- cmd.Wait()
+		close(exited)
+	}()
+	// Every return below has asked the session to exit or killed it, but some
+	// only wait a second for it; the transcript is deleted once it is really
+	// gone, so a session still flushing cannot write it back.
+	defer func() {
+		select {
+		case <-exited:
+		case <-time.After(claudeTranscriptWait):
+		}
+		removeClaudePingTranscript(sessionID)
 	}()
 
 	// Phase 1: wait for the TUI to render and settle so the submit Enter lands on
@@ -448,7 +480,7 @@ func (c *Claude) Trigger(ctx context.Context, dryRun bool) (*TriggerResult, erro
 		case <-done:
 		case <-time.After(time.Second):
 		}
-		if accessErr := claudeSubscriptionErrorFromOutput(output.Bytes()); accessErr != nil {
+		if accessErr := claudeOutputError(output.Bytes()); accessErr != nil {
 			return res, accessErr
 		}
 		return res, nil
@@ -483,7 +515,7 @@ func claudeAwait(ctx context.Context, cmd *exec.Cmd, ptmx *os.File, output *limi
 }
 
 func claudeInteractiveErr(err error, output *limitedBuffer) error {
-	if accessErr := claudeSubscriptionErrorFromOutput(output.Bytes()); accessErr != nil {
+	if accessErr := claudeOutputError(output.Bytes()); accessErr != nil {
 		return accessErr
 	}
 	if err == nil {
@@ -494,6 +526,30 @@ func claudeInteractiveErr(err error, output *limitedBuffer) error {
 		return fmt.Errorf("claude interactive failed: %w", err)
 	}
 	return fmt.Errorf("claude interactive failed: %w: %s", err, tail)
+}
+
+// claudeOutputError reports what Claude Code printed instead of running the
+// ping, when it exits cleanly without having sent anything.
+func claudeOutputError(raw []byte) error {
+	if err := claudeSubscriptionErrorFromOutput(raw); err != nil {
+		return err
+	}
+	return claudeTrustPromptFromOutput(raw)
+}
+
+// claudeTrustPromptFromOutput catches Claude Code's workspace-trust dialog. It
+// appears for a directory nobody has trusted yet — the one watch was started
+// in — and its default answer is "No, exit", so the Enter meant to submit the
+// prompt quits instead: a clean exit with no request sent, which would
+// otherwise read as a successful ping. limitping does not answer it for the
+// user; trusting a directory is theirs to decide.
+func claudeTrustPromptFromOutput(raw []byte) error {
+	compact := strings.ReplaceAll(claudeNormalizedText(string(raw)), " ", "")
+	if !strings.Contains(compact, "itrustthisfolder") && !strings.Contains(compact, "oneyoutrust") {
+		return nil
+	}
+	dir, _ := os.Getwd()
+	return fmt.Errorf("claude asked whether to trust %s and the ping cannot answer that, so nothing was sent: run `claude` there once and trust it, or start limitping from a directory Claude Code already trusts", dir)
 }
 
 // claudeSubscriptionErrorFromOutput reports the denial Claude Code printed
@@ -515,7 +571,7 @@ func claudeInteractiveCancel(ctx context.Context, cmd *exec.Cmd, ptmx *os.File, 
 	case <-done:
 	case <-time.After(time.Second):
 	}
-	if accessErr := claudeSubscriptionErrorFromOutput(output.Bytes()); accessErr != nil {
+	if accessErr := claudeOutputError(output.Bytes()); accessErr != nil {
 		return accessErr
 	}
 	tail := truncate(output.Bytes(), 300)

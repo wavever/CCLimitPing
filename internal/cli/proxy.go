@@ -95,6 +95,17 @@ const (
 	limitLowPct  = 50.0
 )
 
+// claudeSelfResumeGrace bounds how long the proxy waits for Claude Code to
+// resume a task on its own before typing the message itself. Claude Code
+// resumes at the reset time plus a small jitter, and the proxy only notices
+// the reset on its next poll, so it has usually already happened. Variables so
+// tests can shorten them, along with the session list they consult.
+var (
+	claudeSelfResumeGrace = 90 * time.Second
+	claudeSelfResumePoll  = 5 * time.Second
+	claudeSessions        = provider.ClaudeSessions
+)
+
 // continueArmer tracks whether the session is parked at the 5h limit and fires
 // once on the recovery edge. "Parked" is set from the usage endpoint (5h maxed
 // or limit_reached) or, as a corroborated fallback, the on-screen limit message
@@ -129,7 +140,11 @@ func (a *continueArmer) observe(u *usage.Usage, sawLimitMsg bool) bool {
 // on-screen limit-message signal from the output detector; lg records a
 // diagnostic timeline (consecutive identical poll/error lines are collapsed so
 // a parked overnight session doesn't grow the log by a line per minute).
-func watchAndContinue(ctx context.Context, p provider.Provider, inject *sessionInjector, msg string, cfg config.Config, det *limitDetector, lg *proxyLogger) {
+//
+// selfResumed, when set, is asked at the recovery edge whether the CLI resumed
+// the task on its own; the message is only typed when it did not, so the task
+// is never continued twice.
+func watchAndContinue(ctx context.Context, p provider.Provider, inject *sessionInjector, msg string, cfg config.Config, det *limitDetector, lg *proxyLogger, selfResumed func(context.Context) bool) {
 	lg.logf("watcher: polling %s usage every %s", p.Name(), proxyPoll)
 	armer := &continueArmer{weeklyThreshold: cfg.WeeklyThreshold}
 	autoRedeem := providerConfig(cfg, p.Name()).AutoRedeem
@@ -146,6 +161,7 @@ func watchAndContinue(ctx context.Context, p provider.Provider, inject *sessionI
 		// Only a loop that auto-redeems lets its reads carry the reset credits.
 		u, err := provider.ReadUsageForLoop(rctx, p, autoRedeem)
 		cancel()
+		wasParked := armer.parked
 
 		switch {
 		case err != nil:
@@ -154,7 +170,19 @@ func watchAndContinue(ctx context.Context, p provider.Provider, inject *sessionI
 		// this cycle and decide from the next poll.
 		case autoRedeem && redeemExpiringCredit(ctx, p, u, lg):
 			lastLine = ""
-		case armer.observe(u, det.seen()):
+		case !armer.observe(u, det.seen()):
+			if armer.parked && !wasParked {
+				// Whatever Claude Code printed about resuming belongs to an
+				// earlier limit, or was never about one.
+				det.forgetNative()
+			}
+			logState("poll 5h=%.0f%% weekly=%.0f%% limit_reached=%t parked=%t saw_limit_msg=%t",
+				u.FiveHour.UsedPercent, u.Weekly.UsedPercent, u.LimitReached, armer.parked, det.seen())
+		case selfResumed != nil && selfResumed(ctx):
+			lg.logf("RECOVERED 5h=%.0f%% weekly=%.0f%% — %s resumed the task itself; not injecting", u.FiveHour.UsedPercent, u.Weekly.UsedPercent, p.Name())
+			lastLine = ""
+			det.reset()
+		default:
 			lg.logf("RECOVERED 5h=%.0f%% weekly=%.0f%% — injecting %q", u.FiveHour.UsedPercent, u.Weekly.UsedPercent, msg)
 			lastLine = ""
 			inject.typeAndSubmit(msg, proxyInjectSettle)
@@ -162,15 +190,51 @@ func watchAndContinue(ctx context.Context, p provider.Provider, inject *sessionI
 			if cfg.Notify {
 				notify.Notify(p.Name()+": 5h limit recovered", "Sent “"+msg+"” to resume the task")
 			}
-		default:
-			logState("poll 5h=%.0f%% weekly=%.0f%% limit_reached=%t parked=%t saw_limit_msg=%t",
-				u.FiveHour.UsedPercent, u.Weekly.UsedPercent, u.LimitReached, armer.parked, det.seen())
 		}
 
 		select {
 		case <-ctx.Done():
 			return
 		case <-time.After(proxyPoll):
+		}
+	}
+}
+
+// claudeSelfResumed waits, at the recovery edge, for Claude Code to resume the
+// task by itself, and reports whether it did. Claude Code continues a task
+// stopped by a usage limit on its own once the limit resets (on by default,
+// and armed by the "wait" choice of its limit dialog, which the proxy picks),
+// so typing the continue message on top of that would run the task twice.
+//
+// It counts as resumed when Claude Code announces it on screen, or when its
+// own session list shows this session mid-turn. Without either within
+// claudeSelfResumeGrace — or once Claude Code says it will not resume — the
+// proxy types the message as it always has; that is also what happens with a
+// Claude Code too old to resume on its own, merely a little later.
+func claudeSelfResumed(ctx context.Context, det *limitDetector, pid int, lg *proxyLogger) bool {
+	deadline := time.Now().Add(claudeSelfResumeGrace)
+	lg.logf("recovered: waiting up to %s for Claude Code to resume the task itself", claudeSelfResumeGrace)
+	for {
+		if det.nativeDeclined() {
+			return false
+		}
+		if det.nativeContinued() {
+			return true
+		}
+		if sessions, err := claudeSessions(ctx); err == nil {
+			for _, s := range sessions {
+				if s.PID == pid && s.Busy() {
+					return true
+				}
+			}
+		}
+		if !time.Now().Before(deadline) {
+			return false
+		}
+		select {
+		case <-ctx.Done():
+			return true // the session is gone; there is nothing to type into
+		case <-time.After(claudeSelfResumePoll):
 		}
 	}
 }
@@ -304,6 +368,9 @@ type limitDetector struct {
 	mu       sync.Mutex
 	buf      []byte
 	lastScan time.Time
+
+	nativeContinuedSeen atomic.Bool
+	nativeDeclinedSeen  atomic.Bool
 }
 
 func (d *limitDetector) Write(p []byte) (int, error) {
@@ -327,11 +394,25 @@ func (d *limitDetector) Write(p []byte) (int, error) {
 	if d.claudeQuestion.shouldScan() && containsClaudeLimitQuestionClean(clean) {
 		d.claudeQuestion.confirm()
 	}
+	compact := compactTerminalText(clean)
+	if nativeContinuedRE.Match(compact) && !d.nativeContinuedSeen.Swap(true) {
+		d.lg.logf("output: Claude Code is continuing the task on its own")
+	}
+	if nativeDeclinedRE.Match(compact) && !d.nativeDeclinedSeen.Swap(true) {
+		d.lg.logf("output: Claude Code will not continue the task on its own")
+	}
 	return len(p), nil
 }
 
 // seen is the watcher's view of the on-screen limit signal.
 func (d *limitDetector) seen() bool { return d.sig.seen() }
+
+// nativeContinued reports that Claude Code announced it is resuming the task
+// itself since the last reset; nativeDeclined that it announced it will not.
+// Both stick once seen — the announcement may scroll out of the scanned tail
+// long before the watcher asks.
+func (d *limitDetector) nativeContinued() bool { return d.nativeContinuedSeen.Load() }
+func (d *limitDetector) nativeDeclined() bool  { return d.nativeDeclinedSeen.Load() }
 
 // reset clears the signal after an injection, dropping the buffered tail too so
 // the stale banner text can't immediately re-raise the signal it just cleared.
@@ -340,6 +421,43 @@ func (d *limitDetector) reset() {
 	d.buf = d.buf[:0]
 	d.mu.Unlock()
 	d.sig.clear()
+	d.forgetNative()
+}
+
+// Claude Code (2.1.2xx+) can wait out a usage limit and continue the task by
+// itself (the autoContinueAtUsageLimit setting, also what its limit dialog's
+// "wait" choice arms). These match the lines it prints when it does —
+// "Usage limit reset · continuing automatically", "Usage limit available
+// again · continuing now" — and when it gives up on doing so ("… this task
+// will not resume on its own"). Each pins the "usage limit" or "task" half too,
+// because "continuing now" alone is just as likely in the model's own reply.
+// They run on the text with all whitespace removed: the TUI often draws a
+// space as a cursor move, which the ANSI stripping deletes outright.
+var (
+	nativeContinuedRE = regexp.MustCompile(`usagelimit(reset|hasreset|availableagain)\W{0,6}continuing(automatically|now)`)
+	nativeDeclinedRE  = regexp.MustCompile(`thistask(will|did)notresumeonitsown`)
+)
+
+// compactTerminalText drops all whitespace from already-cleaned output.
+func compactTerminalText(clean []byte) []byte {
+	return bytes.Join(bytes.Fields(clean), nil)
+}
+
+// forgetNative drops what the detector saw of Claude Code's own resume lines.
+// The watcher calls it when the session parks at a limit, so the decision at
+// that limit's recovery rests only on what was printed since.
+func (d *limitDetector) forgetNative() {
+	d.nativeContinuedSeen.Store(false)
+	d.nativeDeclinedSeen.Store(false)
+}
+
+func containsAnyClean(clean []byte, phrases [][]byte) bool {
+	for _, ph := range phrases {
+		if bytes.Contains(clean, ph) {
+			return true
+		}
+	}
+	return false
 }
 
 func containsLimitPhrase(b []byte) bool {
@@ -349,12 +467,7 @@ func containsLimitPhrase(b []byte) bool {
 // containsLimitPhraseClean expects input already passed through
 // cleanTerminalOutput (ANSI-stripped, lowercased).
 func containsLimitPhraseClean(clean []byte) bool {
-	for _, ph := range limitPhrases {
-		if bytes.Contains(clean, ph) {
-			return true
-		}
-	}
-	return false
+	return containsAnyClean(clean, limitPhrases)
 }
 
 // containsClaudeLimitQuestion recognizes Claude Code's blocking Ask User
@@ -461,11 +574,25 @@ func newProxyLogger() *proxyLogger {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return &proxyLogger{}
 	}
-	f, err := os.OpenFile(filepath.Join(dir, "continue.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	path := filepath.Join(dir, "continue.log")
+	rotateLog(path, proxyLogMaxBytes)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return &proxyLogger{}
 	}
 	return &proxyLogger{w: f}
+}
+
+// proxyLogMaxBytes caps continue.log; every session appends to it, so without
+// a cap a machine that runs `continue` daily grows it without bound.
+const proxyLogMaxBytes = 1 << 20
+
+// rotateLog moves path aside to path.1 (replacing an older one) once it has
+// grown past max, so the log keeps the latest sessions and one previous batch.
+func rotateLog(path string, max int64) {
+	if info, err := os.Stat(path); err == nil && info.Size() > max {
+		_ = os.Rename(path, path+".1")
+	}
 }
 
 func (l *proxyLogger) logf(format string, args ...any) {

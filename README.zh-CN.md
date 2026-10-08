@@ -82,7 +82,8 @@ limitping bg logs -f
 当 `watch` 发现 5h 窗口已经重置时,会先检查是否有 Claude/Codex 会话正处于对话进行中。
 如果有,`limitping` 会等待并重新读取用量,而不是自己发 ping,因为这个会话的下一次模型
 请求会自然起算新窗口。这个检查依赖 [CLI 钩子](#活跃会话检测钩子)(安装脚本会自动装好);
-未安装钩子时,`limitping` 会跳过该检查,窗口一重置就直接 ping(绝不靠扫描进程来猜)。
+未安装钩子时,Claude 改用 Claude Code 自己的会话列表(`claude agents --json`)判断,Codex 则
+跳过该检查,窗口一重置就直接 ping(绝不靠扫描进程来猜)。
 
 - **Claude**:用 macOS 钥匙串(`Claude Code-credentials`)或 `~/.claude/.credentials.json`
   (设置了 `CLAUDE_CONFIG_DIR` 时与 Claude Code 一样改用该目录)里的 OAuth token,读
@@ -198,8 +199,9 @@ limitping watch --live         # 可选:显示实时心电图状态行
 limitping watch --dry-run      # 只记录何时会触发,不真正发送
 limitping schedule codex --at 05:00 --at 13:00  # 按每日指定时间 ping
 limitping schedule --every 5h  # 按固定间隔 ping,不跟随重置时间
-limitping redeem --dry-run     # 查看会用掉哪一张 Codex 重置卡
-limitping redeem               # 立即使用(不可撤销)
+limitping redeem --dry-run     # 查看会用掉哪一张重置卡
+limitping redeem claude        # 立即使用一张 Claude 重置卡(不可撤销;claude|codex;
+                               # 窗口用量不到一半时会拒绝,加 --force 强制)
 limitping continue codex       # 代理 CLI;5h 限额恢复时自动续跑任务
 limitping continue codex --yolo             # Provider 后面的参数原样透传
 limitping continue claude --dangerously-skip-permissions
@@ -248,7 +250,7 @@ token 数和等价 API 费用,数据来自 `codex exec --json`;Claude 仍用交�
 提供可靠的逐次 machine-readable 用量,所以只显示耗时:
 
 ```
-claude  → claude --model haiku .
+claude  → claude --model haiku --session-id 6f1c2a9e-4b7d-4e2a-9c31-0d5e8f7a1b23 --settings "{\"disableAllHooks\":true,\"promptSuggestionEnabled\":false}" --strict-mcp-config --tools "" -- .
 claude  ✓ pinged (6.6s)
 codex   → codex exec --ephemeral --json --skip-git-repo-check --disable hooks --sandbox read-only -c model_reasoning_effort=low -m gpt-5.6-luna ok
 codex   ✓ pinged (14s, 19,426 tok (in 19,414 / out 12), $0.0023)
@@ -443,8 +445,9 @@ Provider 覆盖 `model`。
 ### 活跃会话检测(钩子)
 
 窗口重置时,`watch` 会避免在你正干活时发 ping——你那一轮对话本身就会起算下一个窗口。
-这依赖 **CLI 钩子**,安装脚本会自动帮你装好。如果没装钩子,`limitping` 会**跳过**这个检查,
-窗口一重置就直接 ping(绝不靠扫描进程来猜)。
+这依赖 **CLI 钩子**,安装脚本会自动帮你装好。如果没装钩子,Claude 会改用 Claude Code 自己的
+会话列表(`claude agents --json`,对话进行中的会话标为 `busy`);Codex 则**跳过**这个检查,
+窗口一重置就直接 ping。`limitping` 绝不靠扫描进程来猜。
 
 安装脚本会自动执行;手动(重新)安装:
 
@@ -452,10 +455,19 @@ Provider 覆盖 `model`。
 limitping hooks install        # 两个 Provider 都装(或 limitping hooks install claude)
 ```
 
-这会把 limitping 的钩子写入 `~/.claude/settings.json` 和 `~/.codex/hooks.json`(保留你已有
-的配置,并写入 `.bak` 备份)。钩子会在 `UserPromptSubmit` / `PreToolUse` / `PostToolUse` /
-`Stop`(Claude 还有 `SessionEnd`)时调用隐藏命令 `limitping hook <provider>`,把会话是否
-处于对话进行中记录到 `~/.config/limitping/activity/`。
+这会把 limitping 的钩子写入 `~/.claude/settings.json` 和 `~/.codex/hooks.json`(设置了
+`CLAUDE_CONFIG_DIR` / `CODEX_HOME` 时写到对应目录;保留你已有的配置,并写入 `.bak` 备份)。
+钩子会在 `UserPromptSubmit` / `PreToolUse` / `PostToolUse` / `Stop` / `SessionEnd`,以及
+不经过 `Stop` 就结束一轮对话的事件 —— Claude 的 `StopFailure`(API 错误如触顶结束了这一轮)
+和 Codex 的 `Interrupt` —— 时调用隐藏命令 `limitping hook <provider>`,把会话是否处于
+对话进行中记录到 `~/.config/limitping/activity/`。`limitping upgrade` 会重新注册这些钩子,
+新版本依赖的新事件会自动补上。
+
+```sh
+limitping hooks status         # 是否已安装?是否最新?(Codex)是否已信任?
+```
+
+`status` 也会提示被其他工具改写掉、或早于当前版本的钩子。
 
 > [!NOTE]
 > Claude Code 会自动加载钩子,无需操作。**Codex** 对自定义命令钩子要求一次性信任:
@@ -538,7 +550,11 @@ limitping continue claude --dangerously-skip-permissions
 - 只在真正的恢复边沿注入:5h 窗口曾打满(或端点报告 `limit_reached`,或 CLI 打印过
   限额消息)且随后明确重置,同时周窗口也未耗尽(按 `weekly_threshold`,含 credits)——
   因此不会一恢复就直接撞上周墙。
-- 诊断时间线写入 `~/.config/limitping/continue.log`。
+- 新版 Claude Code 能在限额重置后自己续跑任务(`/config` 中的 "Continue automatically at
+  usage limit",默认开启)。`continue claude` 会让它先来:恢复时最多等 90 秒,看 Claude Code
+  是否宣布续跑或已开始这一轮,只有没有时才输入续跑消息 —— 任务不会被续两次,旧版
+  Claude Code 也照样能续上。
+- 诊断时间线写入 `~/.config/limitping/continue.log`(超过 1 MB 轮转为 `continue.log.1`)。
 - 目前仅支持 Unix(需要 PTY);在 Windows 上该命令会提示暂不支持。
 
 ## 成本与注意事项

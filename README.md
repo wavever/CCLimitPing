@@ -95,8 +95,9 @@ session is actively mid-turn. If one is, `limitping` waits and re-reads usage
 instead of sending its own ping, because that session's next model request will
 start the new window naturally. This check relies on the
 [CLI hooks](#active-session-detection-hooks) (installed automatically by the
-install script); without them, `limitping` skips the check and pings as soon as
-the window resets.
+install script). Without them, Claude Code's own session list
+(`claude agents --json`) answers for Claude; for Codex `limitping` skips the
+check and pings as soon as the window resets.
 
 - **Claude**: reads `GET https://api.anthropic.com/api/oauth/usage` using the
   OAuth token from the macOS Keychain (`Claude Code-credentials`) or
@@ -226,8 +227,9 @@ limitping watch --live         # optional live heartbeat/status line
 limitping watch --dry-run      # log when pings would fire, without sending
 limitping schedule codex --at 05:00 --at 13:00  # ping at daily local times
 limitping schedule --every 5h  # ping on a fixed interval instead of reset time
-limitping redeem --dry-run     # show which Codex reset credit would be spent
-limitping redeem               # spend it now (irreversible)
+limitping redeem --dry-run     # show which reset credit / reset card would be spent
+limitping redeem claude        # spend a Claude reset card now (irreversible; claude|codex;
+                               # refuses while the windows are under half used — --force)
 limitping continue codex       # proxy the CLI; auto-resume the task on 5h recovery
 limitping continue codex --yolo             # flags after the provider pass through
 limitping continue claude --dangerously-skip-permissions
@@ -279,7 +281,7 @@ Codex ping reports the turn's tokens and an equivalent API cost, read from
 machine-readable per-ping usage, so it shows elapsed time only:
 
 ```
-claude  → claude --model haiku .
+claude  → claude --model haiku --session-id 6f1c2a9e-4b7d-4e2a-9c31-0d5e8f7a1b23 --settings "{\"disableAllHooks\":true,\"promptSuggestionEnabled\":false}" --strict-mcp-config --tools "" -- .
 claude  ✓ pinged (6.6s)
 codex   → codex exec --ephemeral --json --skip-git-repo-check --disable hooks --sandbox read-only -c model_reasoning_effort=low -m gpt-5.6-luna ok
 codex   ✓ pinged (14s, 19,426 tok (in 19,414 / out 12), $0.0023)
@@ -490,9 +492,10 @@ per provider if you prefer.
 
 At a window reset, `watch` avoids pinging while you're actively working — that
 turn would start the next window on its own. This relies on **CLI hooks**, which
-the install script sets up for you. If they aren't installed, `limitping` skips
-the check entirely and pings right at reset (it never guesses from the process
-list).
+the install script sets up for you. If they aren't installed, Claude falls back
+to Claude Code's own session list (`claude agents --json`, which marks a session
+`busy` mid-turn); Codex skips the check entirely and pings right at reset.
+`limitping` never guesses from the process list.
 
 The install script runs this automatically; to (re)install manually:
 
@@ -501,11 +504,21 @@ limitping hooks install        # both providers (or: limitping hooks install cla
 ```
 
 This registers limitping's hooks in `~/.claude/settings.json` and
-`~/.codex/hooks.json` (your existing settings are preserved; a `.bak` backup is
-written). The hooks invoke the hidden `limitping hook <provider>` command on
-`UserPromptSubmit` / `PreToolUse` / `PostToolUse` / `Stop` (Claude also
-`SessionEnd`) to record whether a session is mid-turn under
-`~/.config/limitping/activity/`.
+`~/.codex/hooks.json` (or under `CLAUDE_CONFIG_DIR` / `CODEX_HOME`; your existing
+settings are preserved; a `.bak` backup is written). The hooks invoke the hidden
+`limitping hook <provider>` command on `UserPromptSubmit` / `PreToolUse` /
+`PostToolUse` / `Stop` / `SessionEnd`, plus the events that end a turn without
+`Stop` — Claude's `StopFailure` (an API error such as a usage limit ended it)
+and Codex's `Interrupt` — to record whether a session is mid-turn under
+`~/.config/limitping/activity/`. `limitping upgrade` re-registers them, so a
+release that relies on a new event picks it up.
+
+```sh
+limitping hooks status         # installed? current? (Codex) trusted?
+```
+
+`status` also flags hooks that another tool rewrote away or that predate the
+current release.
 
 > [!NOTE]
 > Claude Code loads its hooks automatically — nothing to do there. **Codex**
@@ -598,7 +611,13 @@ limitping continue claude --dangerously-skip-permissions
   since clearly reset, and the weekly window isn't also exhausted (per
   `weekly_threshold`, credits included) — so it won't resume straight into the
   weekly wall.
-- A diagnostic timeline is written to `~/.config/limitping/continue.log`.
+- Recent Claude Code can resume a task itself once the limit resets ("Continue
+  automatically at usage limit" in `/config`, on by default). `continue claude`
+  defers to it: at recovery it waits up to 90 seconds for Claude Code to announce
+  the resume or start the turn, and only types the message when it didn't — so
+  the task is never continued twice, and older Claude Code still gets resumed.
+- A diagnostic timeline is written to `~/.config/limitping/continue.log`
+  (rotated to `continue.log.1` past 1 MB).
 - Unix only for now (needs a PTY); on Windows the command reports that it's
   unsupported.
 

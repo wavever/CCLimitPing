@@ -97,7 +97,12 @@ func runContinueProxy(ctx context.Context, out io.Writer, providerName string, e
 		_, _ = io.Copy(io.MultiWriter(os.Stdout, detector), ptmx)
 		close(copyDone)
 	}()
-	go watchAndContinue(ctx, p, inject, msg, cfg, detector, lg)
+	var selfResumed func(context.Context) bool
+	if providerName == "claude" {
+		pid := cmd.Process.Pid
+		selfResumed = func(ctx context.Context) bool { return claudeSelfResumed(ctx, detector, pid, lg) }
+	}
+	go watchAndContinue(ctx, p, inject, msg, cfg, detector, lg, selfResumed)
 
 	err = cmd.Wait()
 	// Give the output pump a moment to drain the child's final bytes (incl. the

@@ -6,7 +6,10 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -29,7 +32,124 @@ func TestClaudeInteractiveArgsDropsPrintOnlyFlags(t *testing.T) {
 	}
 }
 
+func fakeClaudeHelp(t *testing.T, text string) {
+	t.Helper()
+	old := claudeHelp
+	claudeHelp = func() string { return text }
+	t.Cleanup(func() { claudeHelp = old })
+}
+
+const claudeHelpWithIsolationFlags = `Options:
+  --session-id <uuid>                   Use a specific session ID
+  --setting-sources <sources>           Comma-separated list of setting sources
+  --settings <file-or-json>             Path to a settings JSON file
+  --strict-mcp-config                   Only use MCP servers from --mcp-config
+  --tools <tools...>                    Specify the list of available tools
+`
+
+func TestClaudeTriggerIsolatesThePing(t *testing.T) {
+	fakeClaudeHelp(t, claudeHelpWithIsolationFlags)
+	c := NewClaude(config.ProviderConfig{Prompt: ".", Model: "haiku"})
+	res, err := c.Trigger(context.Background(), true)
+	if err != nil {
+		t.Fatalf("dry-run trigger: %v", err)
+	}
+	re := regexp.MustCompile(`^claude --model haiku --session-id [0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12} ` +
+		`--settings "{\\"disableAllHooks\\":true,\\"promptSuggestionEnabled\\":false}" --strict-mcp-config --tools "" -- \.$`)
+	if !re.MatchString(res.Command) {
+		t.Fatalf("command = %q, want the isolating flags before the prompt", res.Command)
+	}
+}
+
+func TestClaudeFlagSupportedIgnoresMentionsInDescriptions(t *testing.T) {
+	fakeClaudeHelp(t, `Options:
+  --bare                                Minimal mode: Explicitly provide
+                                        context via --system-prompt,
+                                        --settings, --agents, --plugin-dir.
+  --allowedTools, --allowed-tools <tools...>
+      Comma or space-separated list; see also --tools
+  -c, --continue                        Continue the most recent conversation
+`)
+	for flag, want := range map[string]bool{
+		"--settings":      false, // only in --bare's wrapped description
+		"--tools":         false, // only in prose
+		"--allowed-tools": true,  // declared as an alias
+		"--continue":      true,  // after a short alias
+		"--bare":          true,
+	} {
+		if got := claudeFlagSupported(flag); got != want {
+			t.Errorf("claudeFlagSupported(%s) = %t, want %t", flag, got, want)
+		}
+	}
+}
+
+// --tools and --allowedTools take any number of values, so a prompt that
+// follows them unprotected is parsed as one more tool and never sent — the
+// session then exits cleanly having started no window.
+func TestClaudeTriggerEndsOptionsBeforeThePrompt(t *testing.T) {
+	fakeClaudeHelp(t, claudeHelpWithIsolationFlags)
+	c := NewClaude(config.ProviderConfig{Prompt: "ping", ExtraArgs: []string{"--allowedTools", "Read", "Edit"}})
+	res, err := c.Trigger(context.Background(), true)
+	if err != nil {
+		t.Fatalf("dry-run trigger: %v", err)
+	}
+	if !strings.HasSuffix(res.Command, " -- ping") {
+		t.Fatalf("command = %q, want the prompt after a closing --", res.Command)
+	}
+}
+
+func TestClaudeTrustPromptIsAnError(t *testing.T) {
+	// As the TUI paints it: cursor moves for spaces, styling around words.
+	screen := "\x1b[1mQuick\x1b[1Csafety\x1b[1Ccheck:\x1b[0m Is\x1b[1Cthis\x1b[1Ca\x1b[1Cproject\x1b[1Cyou\x1b[1Ccreated\x1b[1Cor\x1b[1Cone\x1b[1Cyou\x1b[1Ctrust?\r\n" +
+		"\x1b[36m❯\x1b[39m No, exit\r\n  Yes,\x1b[1CI\x1b[1Ctrust\x1b[1Cthis\x1b[1Cfolder\r\n"
+	if err := claudeOutputError([]byte(screen)); err == nil {
+		t.Fatal("a ping that stopped at the trust dialog sent nothing and must not count as a success")
+	}
+	if err := claudeOutputError([]byte("⏺ Hi! What can I help you with?\r\n")); err != nil {
+		t.Fatalf("an ordinary reply is not an error: %v", err)
+	}
+}
+
+func TestClaudeTriggerLeavesUserFlagsAlone(t *testing.T) {
+	fakeClaudeHelp(t, claudeHelpWithIsolationFlags)
+	c := NewClaude(config.ProviderConfig{Prompt: ".", ExtraArgs: []string{"--settings=/etc/ping.json", "--tools", "Read"}})
+	res, err := c.Trigger(context.Background(), true)
+	if err != nil {
+		t.Fatalf("dry-run trigger: %v", err)
+	}
+	if strings.Count(res.Command, "--settings") != 1 || strings.Count(res.Command, "--tools") != 1 {
+		t.Fatalf("command = %q: a flag the user sets must not be passed twice", res.Command)
+	}
+}
+
+func TestRemoveClaudePingTranscript(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", dir)
+	id := newClaudeSessionID()
+	project := filepath.Join(dir, "projects", "-Users-me-work")
+	keep := filepath.Join(project, "other.jsonl")
+	for _, p := range []string{filepath.Join(project, id+".jsonl"), filepath.Join(project, id, "tool-results", "x.txt"), keep} {
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("{}"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	removeClaudePingTranscript(id)
+	if _, err := os.Stat(filepath.Join(project, id+".jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("transcript still there: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(project, id)); !os.IsNotExist(err) {
+		t.Fatalf("session dir still there: %v", err)
+	}
+	if _, err := os.Stat(keep); err != nil {
+		t.Fatalf("an unrelated transcript was removed: %v", err)
+	}
+}
+
 func TestClaudeTriggerDryRunUsesInteractiveCommand(t *testing.T) {
+	fakeClaudeHelp(t, "")
 	c := NewClaude(config.ProviderConfig{
 		Prompt: ".",
 		Model:  "haiku",
@@ -43,8 +163,8 @@ func TestClaudeTriggerDryRunUsesInteractiveCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dry-run trigger: %v", err)
 	}
-	if res.Command != "claude --model haiku ." {
-		t.Fatalf("command = %q, want %q", res.Command, "claude --model haiku .")
+	if res.Command != "claude --model haiku -- ." {
+		t.Fatalf("command = %q, want %q", res.Command, "claude --model haiku -- .")
 	}
 	if strings.Contains(res.Command, " -p") || strings.Contains(res.Command, "--print") {
 		t.Fatalf("command still uses headless mode: %q", res.Command)
