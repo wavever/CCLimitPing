@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,10 +10,13 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/wavever/CCLimitPing/internal/activity"
+	"github.com/wavever/CCLimitPing/internal/auth"
+	"github.com/wavever/CCLimitPing/internal/provider"
 )
 
 // Hooks let limitping detect whether a Claude/Codex session is actually mid-turn
@@ -27,22 +31,208 @@ func newHooksCmd() *cobra.Command {
 		Short: text.hooksShort,
 		Long:  text.hooksLong,
 	}
-	cmd.AddCommand(newHooksInstallCmd(), newHooksUninstallCmd())
+	cmd.AddCommand(newHooksInstallCmd(), newHooksUninstallCmd(), newHooksStatusCmd())
 	return cmd
 }
 
 func newHooksInstallCmd() *cobra.Command {
 	text := localizedText()
-	return &cobra.Command{
+	var refresh bool
+	cmd := &cobra.Command{
 		Use:       "install [provider]",
 		Short:     text.hooksInstallShort,
 		Long:      text.hooksInstallLong,
 		Args:      cobra.MatchAll(cobra.MaximumNArgs(1), cobra.OnlyValidArgs),
 		ValidArgs: []string{"claude", "codex", "all"},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if refresh {
+				return refreshHooks(cmd.OutOrStdout())
+			}
 			return runHooks(cmd.OutOrStdout(), argOrAll(args), true)
 		},
 	}
+	// --refresh re-registers the hooks of providers that already have them, so
+	// an upgrade picks up events and paths a newer release relies on without
+	// installing hooks anyone had chosen not to have. `upgrade` runs it.
+	cmd.Flags().BoolVar(&refresh, "refresh", false, "")
+	_ = cmd.Flags().MarkHidden("refresh")
+	return cmd
+}
+
+func newHooksStatusCmd() *cobra.Command {
+	text := localizedText()
+	return &cobra.Command{
+		Use:   "status",
+		Short: text.hooksStatusShort,
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runHooksStatus(cmd.Context(), cmd.OutOrStdout(), text)
+		},
+	}
+}
+
+// hookState is how far a provider's installed hooks match what this build
+// registers.
+type hookState int
+
+const (
+	hooksOff      hookState = iota // never installed (or removed): nothing to report
+	hooksOK                        // every event registered, pointing at this binary
+	hooksOutdated                  // installed, but missing events or pointing elsewhere
+	hooksMissing                   // enabled, yet gone from the CLI's config (another tool rewrote it)
+)
+
+// checkHooks compares a provider's hook config with what `hooks install` would
+// write. It only reads files, so status can afford it on every run.
+func checkHooks(provider string) (hookState, string) {
+	binPath, _ := os.Executable()
+	path, spec, err := providerHookSpec(provider, binPath)
+	if err != nil {
+		return hooksOff, ""
+	}
+	enabled := activity.Enabled(provider)
+	root, err := loadJSONObject(path)
+	if err != nil {
+		if enabled {
+			return hooksMissing, path
+		}
+		return hooksOff, path
+	}
+	hooks, _ := root["hooks"].(map[string]any)
+	present, current := 0, true
+	for _, event := range spec.events {
+		arr, _ := hooks[event].([]any)
+		found := false
+		for _, g := range arr {
+			group, _ := g.(map[string]any)
+			handlers, _ := group["hooks"].([]any)
+			for _, h := range handlers {
+				handler, _ := h.(map[string]any)
+				if handler == nil || !spec.isOurs(handler) {
+					continue
+				}
+				found = true
+				if !hookBinaryExists(handler) {
+					current = false // installed from a binary that has since moved
+				}
+			}
+		}
+		if found {
+			present++
+		}
+	}
+	switch {
+	case present == 0 && !enabled:
+		return hooksOff, path
+	case present == 0:
+		return hooksMissing, path
+	case present < len(spec.events) || !enabled || !current:
+		return hooksOutdated, path
+	default:
+		return hooksOK, path
+	}
+}
+
+// hookBinaryExists reports whether the limitping binary a handler runs is still
+// there. Any limitping will do — the dev build, the installed one, the lmp
+// alias — so only a binary that has gone missing counts against the hook.
+func hookBinaryExists(handler map[string]any) bool {
+	command, _ := handler["command"].(string)
+	if _, isClaude := handler["args"]; !isClaude {
+		// Codex: one command string, the binary quoted when it holds spaces.
+		if strings.HasPrefix(command, `"`) {
+			command, _, _ = strings.Cut(command[1:], `"`)
+		} else {
+			command, _, _ = strings.Cut(command, " ")
+		}
+	}
+	if command == "" {
+		return false
+	}
+	_, err := os.Stat(command)
+	return err == nil
+}
+
+// hooksAdvice is the one-line nudge status prints for hooks that need fixing,
+// or "" when they are fine (or deliberately absent).
+func hooksAdvice(text cliText, provider string) string {
+	switch state, path := checkHooks(provider); state {
+	case hooksMissing:
+		return fmt.Sprintf(text.hooksMissingFmt, provider, path, provider)
+	case hooksOutdated:
+		return fmt.Sprintf(text.hooksOutdatedFmt, provider, provider)
+	default:
+		return ""
+	}
+}
+
+func runHooksStatus(ctx context.Context, out io.Writer, text cliText) error {
+	for _, p := range []string{"claude", "codex"} {
+		state, path := checkHooks(p)
+		word := map[hookState]string{
+			hooksOff:      text.hooksStateOff,
+			hooksOK:       text.hooksStateOK,
+			hooksOutdated: text.hooksStateOutdated,
+			hooksMissing:  text.hooksStateMissing,
+		}[state]
+		fmt.Fprintf(out, text.hooksStatusLineFmt, p, word, path)
+		if advice := hooksAdvice(text, p); advice != "" {
+			fmt.Fprint(out, advice)
+		}
+		if p == "codex" && state != hooksOff {
+			printCodexHookTrust(ctx, out, text)
+		}
+	}
+	return nil
+}
+
+// printCodexHookTrust reports whether Codex will actually run limitping's hooks:
+// installing them is not enough, Codex runs a command hook only once the user
+// has trusted it in /hooks, and again after any edit to it.
+func printCodexHookTrust(ctx context.Context, out io.Writer, text cliText) {
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	hooks, err := provider.CodexHooks(ctx)
+	if err != nil {
+		fmt.Fprintf(out, text.hooksTrustUnknownFmt, err)
+		return
+	}
+	var untrusted []string
+	ours := 0
+	for _, h := range hooks {
+		if !strings.Contains(h.Command, "hook codex") {
+			continue
+		}
+		ours++
+		if !h.Runs() {
+			untrusted = append(untrusted, h.EventName+"="+h.TrustStatus)
+		}
+	}
+	switch {
+	case ours == 0:
+		return
+	case len(untrusted) > 0:
+		fmt.Fprintf(out, text.hooksUntrustedFmt, strings.Join(untrusted, ", "))
+	default:
+		fmt.Fprint(out, text.hooksTrusted)
+	}
+}
+
+// refreshHooks re-installs the hooks of every provider that has them enabled,
+// quietly leaving the others alone.
+func refreshHooks(out io.Writer) error {
+	for _, p := range []string{"claude", "codex"} {
+		if !activity.Enabled(p) {
+			continue
+		}
+		if state, _ := checkHooks(p); state == hooksOK {
+			continue
+		}
+		if err := runHooks(out, p, true); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func newHooksUninstallCmd() *cobra.Command {
@@ -155,11 +345,13 @@ type hookSpec struct {
 	isOurs  func(handler map[string]any) bool
 }
 
-// claudeSpec wires ~/.claude/settings.json. Claude command hooks take a command
-// plus an args array, so path quoting is a non-issue.
+// claudeSpec wires Claude Code's settings.json. Claude command hooks take a
+// command plus an args array, so path quoting is a non-issue. StopFailure
+// matters as much as Stop: a turn an API error ends — a usage limit above all —
+// fires it instead of Stop.
 func claudeSpec(binPath string) hookSpec {
 	return hookSpec{
-		events: []string{"UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "SessionEnd"},
+		events: []string{"UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "StopFailure", "SessionEnd"},
 		handler: map[string]any{
 			"type":    "command",
 			"command": binPath,
@@ -171,12 +363,12 @@ func claudeSpec(binPath string) hookSpec {
 	}
 }
 
-// codexSpec wires ~/.codex/hooks.json. Codex command hooks take a single command
-// string, so the binary path is quoted if it contains spaces. Codex has no
-// SessionEnd event — the activity TTL covers abandoned sessions.
+// codexSpec wires Codex's hooks.json. Codex command hooks take a single command
+// string, so the binary path is quoted if it contains spaces. Interrupt ends a
+// turn the user cut short, which does not fire Stop.
 func codexSpec(binPath string) hookSpec {
 	return hookSpec{
-		events: []string{"UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"},
+		events: []string{"UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "Interrupt", "SessionEnd"},
 		handler: map[string]any{
 			"type":    "command",
 			"command": quoteCmd(binPath) + " hook codex",
@@ -286,19 +478,19 @@ func quoteCmd(path string) string {
 }
 
 func claudeSettingsPath() (string, error) {
-	home, err := os.UserHomeDir()
+	dir, err := auth.ClaudeConfigDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".claude", "settings.json"), nil
+	return filepath.Join(dir, "settings.json"), nil
 }
 
 func codexHooksPath() (string, error) {
-	home, err := os.UserHomeDir()
+	dir, err := auth.CodexHome()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".codex", "hooks.json"), nil
+	return filepath.Join(dir, "hooks.json"), nil
 }
 
 func loadJSONObject(path string) (map[string]any, error) {

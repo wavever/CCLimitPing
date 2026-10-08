@@ -471,8 +471,9 @@ limitping hooks status         # 是否已安装?是否最新?(Codex)是否已�
 
 > [!NOTE]
 > Claude Code 会自动加载钩子,无需操作。**Codex** 对自定义命令钩子要求一次性信任:
-> 在 Codex 中运行一次 `/hooks` 启用即可。之后用 `limitping hooks uninstall` 全部移除
-> (`limitping uninstall` 也会自动清理)。
+> 在 Codex 中运行一次 `/hooks` 启用即可(新版本新增的钩子也需要再信任一次;
+> `limitping hooks status` 会列出 Codex 尚未信任的钩子)。之后用 `limitping hooks uninstall`
+> 全部移除(`limitping uninstall` 也会自动清理)。
 
 ## 定时 ping
 

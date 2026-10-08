@@ -190,6 +190,18 @@ type cliText struct {
 	hooksNothingFmt     string
 	hooksTrustCodex     string
 
+	hooksStatusShort     string
+	hooksStatusLineFmt   string // provider, state word, config path
+	hooksStateOff        string
+	hooksStateOK         string
+	hooksStateOutdated   string
+	hooksStateMissing    string
+	hooksMissingFmt      string // provider, config path, provider
+	hooksOutdatedFmt     string // provider, provider
+	hooksTrustUnknownFmt string // error
+	hooksUntrustedFmt    string // event=status list
+	hooksTrusted         string
+
 	updateAvailableFmt      string // current, next
 	updateNotesFmt          string // release notes URL
 	updateOptionUpgrade     string // the upgrade command to run
@@ -510,7 +522,7 @@ Examples:
 	hooksShort: "Manage Claude/Codex hooks for accurate active-session detection",
 	hooksLong: `Manage the hooks that let limitping tell whether a Claude Code or Codex session is actually mid-turn (rather than merely running).
 
-When installed, limitping defers its ping while you're actively working and resumes once the turn ends. Without hooks limitping skips this check and pings as soon as the window resets. The install script sets these hooks up automatically.`,
+When installed, limitping defers its ping while you're actively working and resumes once the turn ends. Without them, Claude Code's own session list ('claude agents') answers the same question for Claude; for Codex limitping skips the check and pings as soon as the window resets. The install script sets these hooks up automatically; 'limitping hooks status' checks they are still installed, current and — for Codex — trusted.`,
 	hooksInstallShort: "Register limitping's hooks in the Claude/Codex configs",
 	hooksInstallLong: `Register limitping's hooks in ~/.claude/settings.json and ~/.codex/hooks.json (existing settings are preserved; a .bak backup is written).
 
@@ -535,6 +547,18 @@ Examples:
 	hooksRemovedFmt:   "Removed %s hooks from %s\n",
 	hooksNothingFmt:   "No %s hooks found in %s\n",
 	hooksTrustCodex:   "\nCodex requires a one-time trust: run /hooks inside Codex to enable the new hooks.\n(Claude Code loads its hooks automatically — nothing to do there.)\n",
+
+	hooksStatusShort:     "Check that the Claude/Codex hooks are installed, current and (Codex) trusted",
+	hooksStatusLineFmt:   "%-7s %s  (%s)\n",
+	hooksStateOff:        "not installed",
+	hooksStateOK:         "installed",
+	hooksStateOutdated:   "outdated",
+	hooksStateMissing:    "missing",
+	hooksMissingFmt:      "⚠ %s hooks are gone from %s (another tool may have rewritten it) — run `limitping hooks install %s`\n",
+	hooksOutdatedFmt:     "⚠ %s hooks are out of date — run `limitping hooks install %s`\n",
+	hooksTrustUnknownFmt: "        could not ask Codex whether it trusts them: %v\n",
+	hooksUntrustedFmt:    "⚠ Codex will not run these until you trust them: %s — run /hooks inside Codex\n",
+	hooksTrusted:         "        trusted by Codex\n",
 
 	updateAvailableFmt:      "\n\u2728 Update available!  %s -> %s\n",
 	updateNotesFmt:          "   Release notes: %s\n\n",
@@ -829,7 +853,7 @@ var zhText = cliText{
 	hooksShort: "管理 Claude/Codex 钩子，精确判断会话是否正在运行",
 	hooksLong: `管理用于判断 Claude Code 或 Codex 会话是否真正处于对话进行中（而非仅仅进程存在）的钩子。
 
-安装后，limitping 会在你正在使用时推迟 ping，并在一轮对话结束后恢复。未安装钩子时，limitping 会跳过该检查，窗口一重置就直接 ping。安装脚本会自动装好这些钩子。`,
+安装后，limitping 会在你正在使用时推迟 ping，并在一轮对话结束后恢复。未安装钩子时，Claude 改用 Claude Code 自己的会话列表（'claude agents'）判断；Codex 则跳过该检查，窗口一重置就直接 ping。安装脚本会自动装好这些钩子；'limitping hooks status' 可检查它们是否仍在、是否最新，以及（Codex）是否已信任。`,
 	hooksInstallShort: "在 Claude/Codex 配置中注册 limitping 的钩子",
 	hooksInstallLong: `在 ~/.claude/settings.json 和 ~/.codex/hooks.json 中注册 limitping 的钩子（保留已有配置，并写入 .bak 备份）。
 
@@ -854,6 +878,18 @@ Claude Code 会自动加载钩子；Codex 需要一次性信任：在 Codex 中�
 	hooksRemovedFmt:   "已从 %s 移除钩子: %s\n",
 	hooksNothingFmt:   "%s 中未找到钩子: %s\n",
 	hooksTrustCodex:   "\nCodex 需要一次性信任：在 Codex 中运行 /hooks 启用新钩子。\n（Claude Code 会自动加载，无需操作。）\n",
+
+	hooksStatusShort:     "检查 Claude/Codex 钩子是否已安装、是否最新，以及（Codex）是否已信任",
+	hooksStatusLineFmt:   "%-7s %s  (%s)\n",
+	hooksStateOff:        "未安装",
+	hooksStateOK:         "已安装",
+	hooksStateOutdated:   "需要更新",
+	hooksStateMissing:    "已丢失",
+	hooksMissingFmt:      "⚠ %s 钩子已从 %s 中消失（可能被其他工具改写）— 运行 `limitping hooks install %s`\n",
+	hooksOutdatedFmt:     "⚠ %s 钩子不是最新 — 运行 `limitping hooks install %s`\n",
+	hooksTrustUnknownFmt: "        无法向 Codex 确认是否已信任：%v\n",
+	hooksUntrustedFmt:    "⚠ 以下钩子需要信任后 Codex 才会运行：%s — 在 Codex 中运行 /hooks\n",
+	hooksTrusted:         "        Codex 已信任\n",
 
 	updateAvailableFmt:      "\n\u2728 有新版本!  %s -> %s\n",
 	updateNotesFmt:          "   更新说明: %s\n\n",

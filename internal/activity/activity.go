@@ -27,7 +27,10 @@ import (
 const activityTTL = 10 * time.Minute
 
 // runningEvents refresh a session marker; stopEvents remove it. Both Claude Code
-// and Codex emit these names (Codex has no SessionEnd — the TTL covers it).
+// and Codex emit these names. A turn does not always end in Stop: Claude Code
+// fires StopFailure instead when an API error (a usage limit, say) ends it, and
+// Codex fires Interrupt when the user cuts it short. The TTL still covers a
+// session killed before any of them could fire.
 var runningEvents = map[string]bool{
 	"UserPromptSubmit": true,
 	"PreToolUse":       true,
@@ -35,8 +38,10 @@ var runningEvents = map[string]bool{
 }
 
 var stopEvents = map[string]bool{
-	"Stop":       true,
-	"SessionEnd": true,
+	"Stop":        true,
+	"StopFailure": true,
+	"Interrupt":   true,
+	"SessionEnd":  true,
 }
 
 // IsRunningEvent reports whether a hook event means the session is mid-turn.

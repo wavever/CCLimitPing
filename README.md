@@ -523,8 +523,10 @@ current release.
 > [!NOTE]
 > Claude Code loads its hooks automatically — nothing to do there. **Codex**
 > gates custom command hooks behind a one-time trust step: run `/hooks` inside
-> Codex once to enable them. Remove everything later with
-> `limitping hooks uninstall` (also done automatically by `limitping uninstall`).
+> Codex once to enable them (and again for hooks a newer release adds;
+> `limitping hooks status` lists any Codex does not trust yet). Remove
+> everything later with `limitping hooks uninstall` (also done automatically by
+> `limitping uninstall`).
 
 ## Scheduled pings
 

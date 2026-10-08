@@ -30,6 +30,9 @@ func TestMain(m *testing.M) {
 	}
 	os.Setenv("CLAUDE_CONFIG_DIR", dir)
 	os.Setenv("CODEX_HOME", dir)
+	// And limitping's own state, so the hook health check status runs sees no
+	// hooks rather than the developer's.
+	os.Setenv("XDG_CONFIG_HOME", dir)
 	code := m.Run()
 	os.RemoveAll(dir)
 	os.Exit(code)

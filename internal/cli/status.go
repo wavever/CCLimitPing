@@ -97,7 +97,10 @@ func runStatus(ctx context.Context, out, progress io.Writer, text cliText, provi
 			entries = append(entries, newStatusJSON(u, verbose, day))
 			continue
 		}
-		printUsage(out, text, u, verbose, display, day)
+		printUsageBody(out, text, u, verbose, display, day)
+		// Inside the provider's block, so status and ping render it alike.
+		fmt.Fprint(out, hooksAdvice(text, p.Name()))
+		fmt.Fprintln(out)
 	}
 	if jsonOut {
 		enc := json.NewEncoder(out)
@@ -326,7 +329,15 @@ func timeJSON(t time.Time) string {
 	return t.Format(time.RFC3339)
 }
 
+// printUsage renders one provider's block, closed by a blank line.
 func printUsage(out io.Writer, text cliText, u *usage.Usage, verbose bool, display string, day *spend.Day) {
+	printUsageBody(out, text, u, verbose, display, day)
+	fmt.Fprintln(out)
+}
+
+// printUsageBody is printUsage without the closing blank line, for callers that
+// add lines of their own to the block.
+func printUsageBody(out io.Writer, text cliText, u *usage.Usage, verbose bool, display string, day *spend.Day) {
 	display = normalizeUsageDisplay(display)
 	plan := u.Plan
 	if plan != "" {
@@ -355,7 +366,6 @@ func printUsage(out io.Writer, text cliText, u *usage.Usage, verbose bool, displ
 	if verbose {
 		fmt.Fprintf(out, "  raw: %s\n", string(u.Raw))
 	}
-	fmt.Fprintln(out)
 }
 
 // todaySpend reads what the provider's local CLI sessions consumed today. It is

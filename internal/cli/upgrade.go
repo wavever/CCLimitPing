@@ -98,6 +98,13 @@ func runUpgrade(ctx context.Context, out, errOut io.Writer) error {
 	}
 	fmt.Fprintf(out, "Upgraded limitping -> %s\n", exe)
 	ensureAlias(exe, out)
+	// The new binary, not this one, knows which hook events it relies on, so
+	// it re-registers the hooks of whichever providers already have them.
+	// Best-effort: the upgrade itself has already succeeded.
+	refresh := exec.Command(exe, "hooks", "install", "--refresh")
+	refresh.Stdout = out
+	refresh.Stderr = errOut
+	_ = refresh.Run()
 	cmd := exec.Command(exe, "version")
 	cmd.Stdout = out
 	cmd.Stderr = errOut
