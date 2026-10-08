@@ -35,6 +35,7 @@ type cliText struct {
 	statusSubAccessError      string // translation of provider.ClaudeSubscriptionAccessError; empty = print the error's own text
 	statusFiveHourLineFmt     string // formatted window
 	statusWeeklyLineFmt       string // formatted window
+	statusScopedLineFmt       string // scope label (e.g. a model), formatted window
 	statusNotEnforced         string
 	statusWindowFmt           string // bar, pct, display word, countdown, clock
 	statusWindowNoResetFmt    string // bar, pct, display word
@@ -44,17 +45,31 @@ type cliText struct {
 	statusCreditsFmt          string // balance
 	statusResetCreditsOneFmt  string // count (1)
 	statusResetCreditsManyFmt string // count (>1)
-	statusCreditAvailable     string
-	statusCreditRedeemed      string
-	statusCreditExpired       string
-	statusCreditGrantedFmt    string // datetime
-	statusCreditExpiresFmt    string // datetime
-	statusCreditExpiresInFmt  string // remaining duration, appended to the expires part
-	statusCreditRedeemedFmt   string // datetime
-	statusCreditTimeLayout    string
-	statusListSep             string
-	statusNowWord             string
-	statusWeekdays            [7]string // Sunday first; zero value = Go's "Mon" names
+	// Reset cards the provider withholds from limitping: the line, and the
+	// reason in words (shared with redeem).
+	statusResetCreditsUnavailableFmt string // cardsUnrecognizedFmt / cardsUnavailableFmt rendered
+	statusResetCreditsUnreadFmt      string // error (-v)
+	cardsUnrecognizedFmt             string // reason (surface, cli_version)
+	cardsUnavailableFmt              string // reason
+	statusCreditAvailable            string
+	statusCreditRedeemed             string
+	statusCreditExpired              string
+	statusCreditQueued               string
+	statusCreditPaused               string
+	statusCreditPending              string
+	statusCreditLeftFmt              string // resets left, resets total
+	statusCreditClearsFmt            string // window names
+	statusCreditAtLimitOnly          string
+	statusClearsFiveHour             string
+	statusClearsWeekly               string
+	statusCreditGrantedFmt           string // datetime
+	statusCreditExpiresFmt           string // datetime
+	statusCreditExpiresInFmt         string // remaining duration, appended to the expires part
+	statusCreditRedeemedFmt          string // datetime
+	statusCreditTimeLayout           string
+	statusListSep                    string
+	statusNowWord                    string
+	statusWeekdays                   [7]string // Sunday first; zero value = Go's "Mon" names
 
 	// Today's local token consumption (status, bg status).
 	statusTodayLineFmt      string // rendered token/cost summary
@@ -95,18 +110,34 @@ type cliText struct {
 	continueStartedFmt  string
 
 	// `redeem` reset-credit strings.
-	redeemShort         string
-	redeemLong          string
-	redeemDryRunFlag    string
-	redeemNoneAvailable string
-	redeemPlanFmt       string // expiry stamp, remaining lifetime
-	redeemDryRunNote    string
-	redeemOutcomeFmt    string // outcome sentence
-	redeemDone          string
-	redeemNothing       string
-	redeemNoCredit      string
-	redeemAlready       string
-	redeemUnknownFmt    string // raw outcome code
+	redeemShort           string
+	redeemLong            string
+	redeemDryRunFlag      string
+	redeemNoneAvailable   string
+	redeemPickProviderFmt string // provider list, first provider (for the example)
+	redeemForceFlag       string
+	redeemLowValueFmt     string // provider, per-window usage ("5h 22%, weekly 4%")
+	redeemLowValueNoteFmt string // per-window usage; the dry-run form of redeemLowValueFmt
+	redeemPlanFmt         string // provider, label part, expiry part
+	redeemPlanLabelFmt    string // card label
+	redeemPlanExpiresFmt  string // expiry stamp, remaining lifetime
+	redeemDryRunNote      string
+	redeemOutcomeFmt      string // provider, outcome sentence
+	redeemDone            string
+	redeemNothing         string
+	redeemNoCredit        string
+	redeemAlready         string
+	redeemCooldown        string
+	redeemIneligible      string
+	redeemUnknownFmt      string // raw outcome code
+	// Why nothing could be spent, beyond holding no resets.
+	redeemCardsUnavailableFmt string // provider, cardsUnrecognizedFmt / cardsUnavailableFmt rendered
+	redeemCardsUnreadFmt      string // provider, error
+	redeemNoneUsableFmt       string // provider, the held cards' states
+	// Outcomes the backend explained.
+	redeemCooldownUntilFmt          string // datetime the backend accepts the next reset
+	redeemIneligibleUnrecognizedFmt string // reason (surface, cli_version)
+	redeemIneligibleReasonFmt       string // reason
 
 	bgShort          string
 	bgLong           string
@@ -260,28 +291,41 @@ The 'today' line totals the tokens this machine's Claude Code / Codex sessions h
 	statusJSONFlag:    "output usage as JSON instead of text",
 	statusFetchingFmt: "Fetching %s usage...\n",
 
-	statusErrorFmt:            "%-7s  error: %v\n",
-	statusFiveHourLineFmt:     "  5h     %s\n",
-	statusWeeklyLineFmt:       "  weekly %s\n",
-	statusNotEnforced:         "not currently enforced",
-	statusWindowFmt:           "%s %5.1f%% %-9s resets in %-8s (%s)",
-	statusWindowNoResetFmt:    "%s %5.1f%% %-9s (no active window)",
-	statusUsedWord:            "used",
-	statusRemainingWord:       "remaining",
-	statusCreditsUnlimited:    "  credits unlimited\n",
-	statusCreditsFmt:          "  credits %s\n",
-	statusResetCreditsOneFmt:  "  reset credits %d reset available\n",
-	statusResetCreditsManyFmt: "  reset credits %d resets available\n",
-	statusCreditAvailable:     "available",
-	statusCreditRedeemed:      "redeemed",
-	statusCreditExpired:       "expired",
-	statusCreditGrantedFmt:    "granted %s",
-	statusCreditExpiresFmt:    "expires %s",
-	statusCreditExpiresInFmt:  " (in %s)",
-	statusCreditRedeemedFmt:   "redeemed %s",
-	statusCreditTimeLayout:    "Jan 02 15:04",
-	statusListSep:             ", ",
-	statusNowWord:             "now",
+	statusErrorFmt:                   "%-7s  error: %v\n",
+	statusFiveHourLineFmt:            "  5h     %s\n",
+	statusWeeklyLineFmt:              "  weekly %s\n",
+	statusScopedLineFmt:              "  %-6s %s\n",
+	statusNotEnforced:                "not currently enforced",
+	statusWindowFmt:                  "%s %5.1f%% %-9s resets in %-8s (%s)",
+	statusWindowNoResetFmt:           "%s %5.1f%% %-9s (no active window)",
+	statusUsedWord:                   "used",
+	statusRemainingWord:              "remaining",
+	statusCreditsUnlimited:           "  credits unlimited\n",
+	statusCreditsFmt:                 "  credits %s\n",
+	statusResetCreditsOneFmt:         "  reset credits %d reset available\n",
+	statusResetCreditsManyFmt:        "  reset credits %d resets available\n",
+	statusResetCreditsUnavailableFmt: "  reset credits %s\n",
+	statusResetCreditsUnreadFmt:      "  reset credits could not be read: %v\n",
+	cardsUnrecognizedFmt:             "not offered: Anthropic did not recognize limitping as the Claude CLI (%s) — check that `claude` is on PATH, since limitping presents itself as the installed Claude Code version",
+	cardsUnavailableFmt:              "not offered to this account (%s)",
+	statusCreditAvailable:            "available",
+	statusCreditRedeemed:             "redeemed",
+	statusCreditExpired:              "expired",
+	statusCreditQueued:               "queued behind another card",
+	statusCreditPaused:               "paused",
+	statusCreditPending:              "not usable yet",
+	statusCreditLeftFmt:              "%d of %d left",
+	statusCreditClearsFmt:            "resets %s",
+	statusCreditAtLimitOnly:          "only at the limit",
+	statusClearsFiveHour:             "5h",
+	statusClearsWeekly:               "weekly",
+	statusCreditGrantedFmt:           "granted %s",
+	statusCreditExpiresFmt:           "expires %s",
+	statusCreditExpiresInFmt:         " (in %s)",
+	statusCreditRedeemedFmt:          "redeemed %s",
+	statusCreditTimeLayout:           "Jan 02 15:04",
+	statusListSep:                    ", ",
+	statusNowWord:                    "now",
 
 	statusTodayLineFmt:      "  today  %s\n",
 	statusTodayTokensFmt:    "%s tok",
@@ -315,7 +359,7 @@ Arguments:
   provider  Optional. One of: claude, codex, all.
             Defaults to all, which watches every enabled provider.
 
-Codex reset credits: set auto_redeem = true under [codex] in the config and watch also spends a banked reset credit that is about to lapse — within 24h when there is usage worth reclaiming, or in its final hour. Off by default because redeeming is irreversible; 'limitping redeem' spends one by hand.
+Reset credits (Codex reset credits, Claude reset cards): set auto_redeem = true under [claude] or [codex] in the config and watch also spends a banked reset that is about to lapse — within 24h when there is usage worth reclaiming, or in its final hour. Off by default because redeeming is irreversible; 'limitping redeem' spends one by hand.
 
 Examples:
   limitping watch
@@ -354,7 +398,7 @@ Arguments:
 
 The continue message is per-provider continue_prompt in the config (default "continue"; set it to e.g. "继续任务"). Quit from inside the CLI to exit.
 
-Codex reset credits: set auto_redeem = true under [codex] in the config and the same background watcher also spends a banked reset credit that is about to lapse — within 24h when there is usage worth reclaiming, or in its final hour — so a parked session can resume without waiting for the window. Off by default because redeeming is irreversible; 'limitping redeem' spends one by hand.
+Reset credits (Codex reset credits, Claude reset cards): set auto_redeem = true under [claude] or [codex] in the config and the same background watcher also spends a banked reset that is about to lapse — within 24h when there is usage worth reclaiming, or in its final hour — so a parked session can resume without waiting for the window. Off by default because redeeming is irreversible; 'limitping redeem' spends one by hand.
 
 Examples:
   limitping continue codex
@@ -363,26 +407,49 @@ Examples:
 	continueBadProvider: "invalid provider (want claude or codex):",
 	continueStartedFmt:  "Proxying %s with auto-continue on 5h-limit recovery (message: %q). Use it as usual; quit from inside the CLI to exit.\n",
 
-	redeemShort: "Spend a banked Codex rate-limit reset credit now",
-	redeemLong: `Consume one of the Codex reset credits shown by 'limitping status', resetting the rate-limit windows it is eligible for.
+	redeemShort: "Spend a banked rate-limit reset (Codex reset credit or Claude reset card) now",
+	redeemLong: `Consume one of the reset credits shown by 'limitping status' — a Codex reset credit or a Claude reset card — resetting the rate-limit windows it covers.
 
-Redeeming is irreversible. The backend decides which credit to spend and refuses with "nothing to reset" when no window is currently eligible, so a credit is never burned for nothing.
+Arguments:
+  provider  Optional. One of: claude, codex.
+            Defaults to whichever enabled provider holds a reset; when both
+            do, name one.
 
-Set auto_redeem = true under [codex] in the config to let 'watch' and 'continue' spend a credit on their own once it is close to expiring (within 24h with real usage to reclaim, or in its final hour).
+Redeeming is irreversible. For Codex the credit closest to expiring is spent; for Claude, the card Anthropic has queued next is spent. Either backend refuses — spending nothing — when the reset has nothing to act on: Codex when no window is eligible, Claude when the card only works at a usage limit and you are not at one.
+
+A reset is only worth spending when the windows it restores are well used, so redeem stops — spending nothing — while none of them is at least half used; --force spends it anyway.
+
+When a redemption cannot be confirmed — a timeout, a lost connection, or a backend that has not settled it yet — it may still go through: check 'limitping status' first. Running redeem again is safe either way, because it repeats that same request rather than making a new one, so it can never spend a second reset.
+
+Set auto_redeem = true under [claude] or [codex] in the config to let 'watch' and 'continue' spend a reset on their own once it is close to expiring (within 24h with real usage to reclaim, or in its final hour; a card that only works at a usage limit waits until you are at one).
 
 Examples:
   limitping redeem --dry-run
-  limitping redeem`,
-	redeemDryRunFlag:    "show which credit would be spent without consuming it",
-	redeemNoneAvailable: "no reset credits available to redeem",
-	redeemPlanFmt:       "codex   redeeming 1 reset credit (expires %s, in %s)\n",
-	redeemDryRunNote:    "dry run: nothing was consumed\n",
-	redeemOutcomeFmt:    "codex   %s\n",
-	redeemDone:          "redeemed — the eligible rate-limit windows were reset",
-	redeemNothing:       "no rate-limit window is currently eligible for a reset; the credit was not spent",
-	redeemNoCredit:      "the account has no reset credits available",
-	redeemAlready:       "this redemption already completed earlier",
-	redeemUnknownFmt:    "unexpected outcome from the backend: %s",
+  limitping redeem claude`,
+	redeemDryRunFlag:                "show which credit would be spent without consuming it",
+	redeemNoneAvailable:             "no reset credits available to redeem",
+	redeemPickProviderFmt:           "reset credits are available for %s; name the one to spend, e.g. 'limitping redeem %s'",
+	redeemForceFlag:                 "spend the reset even while the windows it restores are barely used",
+	redeemLowValueFmt:               "%s: the windows this reset restores are only %s used, so spending it now would reclaim little; nothing was spent (re-run with --force to spend it anyway)",
+	redeemLowValueNoteFmt:           "        note: only %s used — without --force, a real run stops here\n",
+	redeemPlanFmt:                   "%-7s redeeming 1 reset credit%s%s\n",
+	redeemPlanLabelFmt:              " — %s",
+	redeemPlanExpiresFmt:            " (expires %s, in %s)",
+	redeemDryRunNote:                "dry run: nothing was consumed\n",
+	redeemOutcomeFmt:                "%-7s %s\n",
+	redeemDone:                      "redeemed — the eligible rate-limit windows were reset",
+	redeemNothing:                   "no rate-limit window is currently eligible for a reset; the credit was not spent",
+	redeemNoCredit:                  "the account has no reset credits available",
+	redeemAlready:                   "this reset was already used; nothing changed just now",
+	redeemCooldown:                  "another reset just went through on this account; nothing was spent — try again in a minute",
+	redeemIneligible:                "this reset can't be used any more; nothing was spent",
+	redeemUnknownFmt:                "unexpected outcome from the backend: %s",
+	redeemCardsUnavailableFmt:       "%s: reset credits %s; nothing was spent",
+	redeemCardsUnreadFmt:            "%s: the reset credits could not be read, so nothing was spent (%v)",
+	redeemNoneUsableFmt:             "%s: reset credits are held, but none can be used right now (%s); nothing was spent",
+	redeemCooldownUntilFmt:          "another reset just went through on this account; nothing was spent — try again after %s",
+	redeemIneligibleUnrecognizedFmt: "refused: Anthropic did not recognize limitping as the Claude CLI (%s). The card itself is fine and nothing was spent — check that `claude` is on PATH, since limitping presents itself as the installed Claude Code version",
+	redeemIneligibleReasonFmt:       "this reset can't be used right now (%s); nothing was spent",
 
 	bgShort: "Run watch in the background — start | stop | status | logs",
 	bgLong: `Run the watch daemon detached from the terminal so it keeps pinging across 5h windows after you close the shell.
@@ -542,30 +609,43 @@ var zhText = cliText{
 	statusJSONFlag:    "以 JSON 格式输出用量，而非文本",
 	statusFetchingFmt: "正在查询 %s 用量...\n",
 
-	statusErrorFmt:            "%-7s  错误: %v\n",
-	statusSubAccessError:      "Claude 订阅访问不可用（可能是会员已到期/续费失败，或组织管理员禁用了 Claude Code）；请恢复订阅，或在 Claude Code 中改用 Anthropic API Key",
-	statusFiveHourLineFmt:     "  5h     %s\n",
-	statusWeeklyLineFmt:       "  周     %s\n",
-	statusNotEnforced:         "当前未生效",
-	statusWindowFmt:           "%s %5.1f%% %s  %s 后重置 (%s)",
-	statusWindowNoResetFmt:    "%s %5.1f%% %s  (无活跃窗口)",
-	statusUsedWord:            "已用",
-	statusRemainingWord:       "剩余",
-	statusCreditsUnlimited:    "  credits 不限量\n",
-	statusCreditsFmt:          "  credits %s\n",
-	statusResetCreditsOneFmt:  "  重置券 %d 张可用\n",
-	statusResetCreditsManyFmt: "  重置券 %d 张可用\n",
-	statusCreditAvailable:     "可用",
-	statusCreditRedeemed:      "已兑换",
-	statusCreditExpired:       "已过期",
-	statusCreditGrantedFmt:    "发放于 %s",
-	statusCreditExpiresFmt:    "有效期至 %s",
-	statusCreditExpiresInFmt:  " (剩 %s)",
-	statusCreditRedeemedFmt:   "兑换于 %s",
-	statusCreditTimeLayout:    "01-02 15:04",
-	statusListSep:             "，",
-	statusNowWord:             "现在",
-	statusWeekdays:            [7]string{"周日", "周一", "周二", "周三", "周四", "周五", "周六"},
+	statusErrorFmt:                   "%-7s  错误: %v\n",
+	statusSubAccessError:             "Claude 订阅访问不可用（可能是会员已到期/续费失败，或组织管理员禁用了 Claude Code）；请恢复订阅，或在 Claude Code 中改用 Anthropic API Key",
+	statusFiveHourLineFmt:            "  5h     %s\n",
+	statusWeeklyLineFmt:              "  周     %s\n",
+	statusScopedLineFmt:              "  %-6s %s\n",
+	statusNotEnforced:                "当前未生效",
+	statusWindowFmt:                  "%s %5.1f%% %s  %s 后重置 (%s)",
+	statusWindowNoResetFmt:           "%s %5.1f%% %s  (无活跃窗口)",
+	statusUsedWord:                   "已用",
+	statusRemainingWord:              "剩余",
+	statusCreditsUnlimited:           "  credits 不限量\n",
+	statusCreditsFmt:                 "  credits %s\n",
+	statusResetCreditsOneFmt:         "  重置券 %d 张可用\n",
+	statusResetCreditsManyFmt:        "  重置券 %d 张可用\n",
+	statusResetCreditsUnavailableFmt: "  重置券 %s\n",
+	statusResetCreditsUnreadFmt:      "  重置券 读取失败: %v\n",
+	cardsUnrecognizedFmt:             "未向 limitping 提供：Anthropic 没有把 limitping 识别为 Claude CLI（%s）—— 请确认 `claude` 在 PATH 中，limitping 会以本机安装的 Claude Code 版本自报身份",
+	cardsUnavailableFmt:              "该账号暂不可用（%s）",
+	statusCreditAvailable:            "可用",
+	statusCreditRedeemed:             "已兑换",
+	statusCreditExpired:              "已过期",
+	statusCreditQueued:               "排在另一张之后",
+	statusCreditPaused:               "已暂停",
+	statusCreditPending:              "暂不可用",
+	statusCreditLeftFmt:              "剩 %d/%d 次",
+	statusCreditClearsFmt:            "可重置 %s",
+	statusCreditAtLimitOnly:          "仅在触顶时可用",
+	statusClearsFiveHour:             "5h",
+	statusClearsWeekly:               "周限额",
+	statusCreditGrantedFmt:           "发放于 %s",
+	statusCreditExpiresFmt:           "有效期至 %s",
+	statusCreditExpiresInFmt:         " (剩 %s)",
+	statusCreditRedeemedFmt:          "兑换于 %s",
+	statusCreditTimeLayout:           "01-02 15:04",
+	statusListSep:                    "，",
+	statusNowWord:                    "现在",
+	statusWeekdays:                   [7]string{"周日", "周一", "周二", "周三", "周四", "周五", "周六"},
 
 	statusTodayLineFmt:      "  今日   %s\n",
 	statusTodayTokensFmt:    "%s tok",
@@ -599,7 +679,7 @@ var zhText = cliText{
   provider  可选。取值: claude、codex、all。
             默认是 all，会监测所有已启用的 Provider。
 
-Codex 重置卡: 在配置的 [codex] 下设置 auto_redeem = true，watch 还会在重置卡临近过期时自动用掉它——剩余有效期 24h 内且确实有用量可回收，或进入最后 1 小时。因为兑换不可撤销，默认关闭；手动兑换用 'limitping redeem'。
+重置卡（Codex 重置卡、Claude 重置卡）: 在配置的 [claude] 或 [codex] 下设置 auto_redeem = true，watch 还会在重置卡临近过期时自动用掉它——剩余有效期 24h 内且确实有用量可回收，或进入最后 1 小时。因为兑换不可撤销，默认关闭；手动兑换用 'limitping redeem'。
 
 示例:
   limitping watch
@@ -638,7 +718,7 @@ Codex 重置卡: 在配置的 [codex] 下设置 auto_redeem = true，watch 还�
 
 续跑消息取配置中各 Provider 的 continue_prompt（默认 "continue"，可改成如 "继续任务"）。退出请用该 CLI 自带的退出方式。
 
-Codex 重置卡: 在配置的 [codex] 下设置 auto_redeem = true，后台的同一个 watcher 还会在重置卡临近过期时自动用掉它——剩余有效期 24h 内且确实有用量可回收，或进入最后 1 小时——这样停在限额处的会话不必干等窗口重置。因为兑换不可撤销，默认关闭；手动兑换用 'limitping redeem'。
+重置卡（Codex 重置卡、Claude 重置卡）: 在配置的 [claude] 或 [codex] 下设置 auto_redeem = true，后台的同一个 watcher 还会在重置卡临近过期时自动用掉它——剩余有效期 24h 内且确实有用量可回收，或进入最后 1 小时——这样停在限额处的会话不必干等窗口重置。因为兑换不可撤销，默认关闭；手动兑换用 'limitping redeem'。
 
 示例:
   limitping continue codex
@@ -647,26 +727,48 @@ Codex 重置卡: 在配置的 [codex] 下设置 auto_redeem = true，后台的�
 	continueBadProvider: "无效的 Provider（应为 claude 或 codex）：",
 	continueStartedFmt:  "正在代理 %s，5h 限额恢复后会自动续跑（消息：%q）。照常使用；退出请用该 CLI 自带的退出方式。\n",
 
-	redeemShort: "立即使用一张已到账的 Codex 限额重置卡",
-	redeemLong: `消耗一张 'limitping status' 中显示的 Codex 重置卡，重置它能覆盖的限额窗口。
+	redeemShort: "立即使用一张已到账的限额重置卡（Codex 或 Claude）",
+	redeemLong: `消耗一张 'limitping status' 中显示的重置卡（Codex 重置卡或 Claude 重置卡），重置它能覆盖的限额窗口。
 
-兑换不可撤销。由后端决定用哪一张；当前没有可重置的窗口时后端会以 "nothing to reset" 拒绝，因此不会白烧一张卡。
+参数:
+  provider  可选。取值: claude、codex。
+            默认用持有重置卡的那个已启用 Provider；两边都有时需指明。
 
-在配置的 [codex] 下设置 auto_redeem = true，可让 'watch' 和 'continue' 在卡临近过期时自动使用（剩余有效期 24h 内且确实有用量可回收，或进入最后 1 小时）。
+兑换不可撤销。Codex 用的是最快过期的那张；Claude 用的是 Anthropic 排在最前面的那张。重置无事可做时两边后端都会拒绝且不消耗卡：Codex 是当前没有可重置的窗口，Claude 是这张卡仅在触顶时可用而你尚未触顶。
+
+重置卡只有在它能重置的窗口用得够多时才值得用：这些窗口没有一个用到一半时，redeem 会停下且不消耗卡；加 --force 照样使用。
+
+兑换结果无法确认时（超时、连接中断，或后端尚未结算），它仍可能已经生效：请先看 'limitping status'。无论如何再次运行 redeem 都是安全的 —— 它会重发同一个请求而不是新建一个，因此绝不会多用掉一张。
+
+在配置的 [claude] 或 [codex] 下设置 auto_redeem = true，可让 'watch' 和 'continue' 在卡临近过期时自动使用（剩余有效期 24h 内且确实有用量可回收，或进入最后 1 小时；仅在触顶时可用的卡会等到真正触顶再用）。
 
 示例:
   limitping redeem --dry-run
-  limitping redeem`,
-	redeemDryRunFlag:    "只显示会用掉哪一张，不实际消耗",
-	redeemNoneAvailable: "没有可用的重置卡",
-	redeemPlanFmt:       "codex   即将使用 1 张重置卡（有效期至 %s，剩 %s）\n",
-	redeemDryRunNote:    "dry run: 未消耗任何重置卡\n",
-	redeemOutcomeFmt:    "codex   %s\n",
-	redeemDone:          "已兑换 —— 符合条件的限额窗口已重置",
-	redeemNothing:       "当前没有可重置的限额窗口，本次未消耗重置卡",
-	redeemNoCredit:      "账号没有可用的重置卡",
-	redeemAlready:       "这次兑换此前已经完成过",
-	redeemUnknownFmt:    "后端返回了未知结果: %s",
+  limitping redeem claude`,
+	redeemDryRunFlag:                "只显示会用掉哪一张，不实际消耗",
+	redeemNoneAvailable:             "没有可用的重置卡",
+	redeemPickProviderFmt:           "%s 都有可用的重置卡；请指明要用哪个，例如 'limitping redeem %s'",
+	redeemForceFlag:                 "即使能重置的窗口几乎没用，也照样使用",
+	redeemLowValueFmt:               "%s: 这张卡能重置的窗口目前只用了 %s，现在用基本是浪费；本次未消耗（确实要用请加 --force 重新运行）",
+	redeemLowValueNoteFmt:           "        注意: 目前只用了 %s —— 实际运行时不加 --force 会在这里停下\n",
+	redeemPlanFmt:                   "%-7s 即将使用 1 张重置卡%s%s\n",
+	redeemPlanLabelFmt:              "「%s」",
+	redeemPlanExpiresFmt:            "（有效期至 %s，剩 %s）",
+	redeemDryRunNote:                "dry run: 未消耗任何重置卡\n",
+	redeemOutcomeFmt:                "%-7s %s\n",
+	redeemDone:                      "已兑换 —— 符合条件的限额窗口已重置",
+	redeemNothing:                   "当前没有可重置的限额窗口，本次未消耗重置卡",
+	redeemNoCredit:                  "账号没有可用的重置卡",
+	redeemAlready:                   "这张重置卡已经用过，本次没有任何变化",
+	redeemCooldown:                  "账号上刚有另一次重置生效，本次未消耗重置卡 —— 请一分钟后再试",
+	redeemIneligible:                "这张重置卡已不可用，本次未消耗",
+	redeemUnknownFmt:                "后端返回了未知结果: %s",
+	redeemCardsUnavailableFmt:       "%s: 重置卡%s；本次未消耗",
+	redeemCardsUnreadFmt:            "%s: 无法读取重置卡，本次未消耗（%v）",
+	redeemNoneUsableFmt:             "%s: 持有重置卡，但目前没有一张能用（%s）；本次未消耗",
+	redeemCooldownUntilFmt:          "账号上刚有另一次重置生效，本次未消耗重置卡 —— 请在 %s 之后再试",
+	redeemIneligibleUnrecognizedFmt: "被拒绝：Anthropic 没有把 limitping 识别为 Claude CLI（%s）。卡本身没有问题，本次未消耗 —— 请确认 `claude` 在 PATH 中，limitping 会以本机安装的 Claude Code 版本自报身份",
+	redeemIneligibleReasonFmt:       "这张重置卡目前不能使用（%s），本次未消耗",
 
 	bgShort: "在后台运行 watch —— start | stop | status | logs",
 	bgLong: `以脱离终端的方式在后台运行 watch 守护进程，关闭终端后仍会在每个 5h 窗口重置时持续 ping。

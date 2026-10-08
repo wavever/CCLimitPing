@@ -42,7 +42,8 @@ type ProviderConfig struct {
 	// Empty falls back to "continue".
 	ContinuePrompt string `toml:"continue_prompt"`
 	// AutoRedeem lets `watch` and `continue` spend a banked reset credit that is
-	// about to lapse. Codex-only, and off by default: redeeming is irreversible.
+	// about to lapse (a Codex reset credit or a Claude reset card). Off by
+	// default: redeeming is irreversible.
 	AutoRedeem bool `toml:"auto_redeem"`
 }
 
@@ -199,6 +200,10 @@ align_start = ""
 # Message injected to resume a proxied session when the 5h limit recovers
 # (limitping continue claude). Empty = "continue".
 continue_prompt = "continue"
+# Let watch/continue spend a Claude reset card that is about to lapse (within
+# 24h with usage to reclaim, or in its final hour). Redeeming is irreversible;
+# "limitping redeem claude" does it manually. See "limitping help redeem".
+auto_redeem = false
 
 [codex]
 enabled = true

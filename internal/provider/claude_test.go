@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -47,6 +48,47 @@ func TestClaudeTriggerDryRunUsesInteractiveCommand(t *testing.T) {
 	}
 	if strings.Contains(res.Command, " -p") || strings.Contains(res.Command, "--print") {
 		t.Fatalf("command still uses headless mode: %q", res.Command)
+	}
+}
+
+func TestClaudeScopedLimitsKeepOnlyTheNarrowerRows(t *testing.T) {
+	var r claudeUsageResp
+	body := `{"limits":[
+		{"kind":"session","percent":8,"resets_at":"2026-10-07T17:40:00+00:00"},
+		{"kind":"weekly_all","percent":9,"resets_at":"2026-10-10T20:00:00+00:00"},
+		{"kind":"weekly_scoped","percent":41,"resets_at":"2026-10-10T20:00:00+00:00","scope":{"model":{"display_name":"Opus"}}},
+		{"kind":"weekly_scoped","percent":3,"resets_at":null,"scope":{"surface":{"display_name":"Cowork"}}},
+		{"kind":"monthly_new_meter","percent":1,"resets_at":null,"scope":null}
+	]}`
+	if err := json.Unmarshal([]byte(body), &r); err != nil {
+		t.Fatal(err)
+	}
+	got := claudeScopedLimits(r.Limits)
+	if len(got) != 3 {
+		t.Fatalf("scoped = %+v, want the three non plan-wide rows", got)
+	}
+	if got[0].Label != "Opus" || got[0].Window.UsedPercent != 41 || got[0].Window.WindowSeconds != claudeWeeklySec || got[0].Window.ResetsAt.IsZero() {
+		t.Fatalf("model row = %+v", got[0])
+	}
+	if got[1].Label != "Cowork" || got[2].Label != "monthly_new_meter" {
+		t.Fatalf("labels = %q, %q: a row without a scope label falls back to its kind", got[1].Label, got[2].Label)
+	}
+}
+
+func TestClaudeBucketsKeepOnlyReportedWindows(t *testing.T) {
+	got := claudeBuckets([]byte(`{
+		"five_hour": {"utilization": 8, "resets_at": "2026-10-07T17:40:00+00:00"},
+		"seven_day": {"utilization": 9, "resets_at": "2026-10-10T20:00:00+00:00"},
+		"seven_day_opus": {"utilization": 100, "resets_at": "2026-10-10T20:00:00+00:00"},
+		"seven_day_sonnet": null,
+		"seven_day_breakdown": {"as_of": "2026-10-07T14:17:28+00:00", "rows": []}
+	}`))
+	if len(got) != 1 {
+		t.Fatalf("buckets = %+v, want only seven_day_opus", got)
+	}
+	opus := got["seven_day_opus"]
+	if opus.UsedPercent != 100 || opus.WindowSeconds != claudeWeeklySec || opus.ResetsAt.IsZero() {
+		t.Fatalf("seven_day_opus = %+v", opus)
 	}
 }
 

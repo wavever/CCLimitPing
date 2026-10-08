@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -22,10 +23,26 @@ func fakeCodexHome(t *testing.T) {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("CODEX_HOME", home)
+	// The attempts a redemption records live in limitping's config dir.
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	authJSON := `{"tokens":{"access_token":"access-token","refresh_token":"refresh-token","account_id":"account-123"}}`
 	if err := os.WriteFile(filepath.Join(home, "auth.json"), []byte(authJSON), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// Never reach the real codex binary from a test: it would spend a real
+	// reset credit. Tests that exercise the app-server route install their own.
+	fakeCodexAppServer(t, func(string, any) (json.RawMessage, error) {
+		return nil, fmt.Errorf("%w: disabled in tests", errCodexAppServerUnavailable)
+	})
+}
+
+func fakeCodexAppServer(t *testing.T, fn func(method string, params any) (json.RawMessage, error)) {
+	t.Helper()
+	old := codexAppServerCall
+	codexAppServerCall = func(_ context.Context, method string, params any) (json.RawMessage, error) {
+		return fn(method, params)
+	}
+	t.Cleanup(func() { codexAppServerCall = old })
 }
 
 func TestCodexReadUsageSendsCompatibleHeaders(t *testing.T) {
@@ -416,18 +433,18 @@ func TestCodexRedeemResetCreditReportsOutcome(t *testing.T) {
 		}, nil
 	})
 
-	got, err := NewCodex(config.ProviderConfig{}).RedeemResetCredit(context.Background())
+	got, err := NewCodex(config.ProviderConfig{}).RedeemResetCredit(context.Background(), usage.ResetCredit{})
 	if err != nil {
 		t.Fatalf("RedeemResetCredit: %v", err)
 	}
-	if got != RedeemReset {
+	if got.Outcome != RedeemReset {
 		t.Fatalf("outcome = %q, want %q", got, RedeemReset)
 	}
 	var sent map[string]string
 	if err := json.Unmarshal(body, &sent); err != nil {
 		t.Fatalf("request body is not JSON: %v (%s)", err, body)
 	}
-	if sent["idempotency_key"] == "" {
+	if sent["redeem_request_id"] == "" {
 		t.Fatalf("request body = %s, want an idempotency key", body)
 	}
 }
@@ -450,8 +467,8 @@ func TestCodexRedeemResetCreditNormalizesCamelCaseOutcomes(t *testing.T) {
 					Request:    req,
 				}, nil
 			})
-			got, err := NewCodex(config.ProviderConfig{}).RedeemResetCredit(context.Background())
-			if err != nil || got != want {
+			got, err := NewCodex(config.ProviderConfig{}).RedeemResetCredit(context.Background(), usage.ResetCredit{})
+			if err != nil || got.Outcome != want {
 				t.Fatalf("outcome = %q (err %v), want %q", got, err, want)
 			}
 		})
@@ -467,7 +484,7 @@ func TestCodexRedeemResetCreditRejectsOutcomelessResponse(t *testing.T) {
 			Request:    req,
 		}, nil
 	})
-	if _, err := NewCodex(config.ProviderConfig{}).RedeemResetCredit(context.Background()); err == nil {
+	if _, err := NewCodex(config.ProviderConfig{}).RedeemResetCredit(context.Background(), usage.ResetCredit{}); err == nil {
 		t.Fatal("a response without an outcome must not be reported as a redemption")
 	}
 }
@@ -488,7 +505,7 @@ func TestCodexAutoRedeemSkipsUntilExpiryAndThenThrottles(t *testing.T) {
 	fresh := &usage.Usage{ResetCredits: &usage.ResetCredits{Credits: []usage.ResetCredit{
 		{Status: "available", ExpiresAt: time.Now().Add(10 * 24 * time.Hour)},
 	}}}
-	if outcome, err := c.AutoRedeemResetCredit(context.Background(), fresh); outcome != "" || err != nil {
+	if outcome, err := c.AutoRedeemResetCredit(context.Background(), fresh); outcome.Outcome != "" || err != nil {
 		t.Fatalf("outcome = %q (err %v), want no attempt for a credit with 10 days left", outcome, err)
 	}
 	if requests != 0 {
@@ -498,11 +515,11 @@ func TestCodexAutoRedeemSkipsUntilExpiryAndThenThrottles(t *testing.T) {
 	expiring := &usage.Usage{ResetCredits: &usage.ResetCredits{Credits: []usage.ResetCredit{
 		{Status: "available", ExpiresAt: time.Now().Add(30 * time.Minute)},
 	}}}
-	if outcome, err := c.AutoRedeemResetCredit(context.Background(), expiring); outcome != RedeemNothingToReset || err != nil {
+	if outcome, err := c.AutoRedeemResetCredit(context.Background(), expiring); outcome.Outcome != RedeemNothingToReset || err != nil {
 		t.Fatalf("outcome = %q (err %v), want %q", outcome, err, RedeemNothingToReset)
 	}
 	// A 1-minute poll loop must not retry the refused redemption every cycle.
-	if outcome, err := c.AutoRedeemResetCredit(context.Background(), expiring); outcome != "" || err != nil {
+	if outcome, err := c.AutoRedeemResetCredit(context.Background(), expiring); outcome.Outcome != "" || err != nil {
 		t.Fatalf("outcome = %q (err %v), want the cooldown to suppress the retry", outcome, err)
 	}
 	if requests != 1 {

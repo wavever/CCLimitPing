@@ -65,7 +65,7 @@ func runPings(ctx context.Context, out io.Writer, text cliText, providers []prov
 	// Reported even when a ping failed: that is exactly when the window state
 	// is worth seeing. A failing status read is printed inline by runStatus and
 	// must not turn a successful ping into a failed command.
-	_ = runStatus(ctx, out, io.Discard, text, providers, false, false, display)
+	_ = runStatus(ctx, out, io.Discard, text, providers, false, false, display, false)
 	return firstErr
 }
 

@@ -68,19 +68,111 @@ const (
 	RedeemNothingToReset  = "nothing_to_reset" // no window is eligible; no credit was spent
 	RedeemNoCredit        = "no_credit"        // the account has no banked credits
 	RedeemAlreadyRedeemed = "already_redeemed" // this attempt already completed
+	RedeemCooldown        = "cooldown"         // another reset just went through; nothing was spent
+	RedeemIneligible      = "ineligible"       // the credit can no longer be used; nothing was spent
 )
+
+// RedeemResult is the backend's definite answer to a redemption.
+type RedeemResult struct {
+	// Outcome is one of the Redeem* constants, or a code this version does not
+	// know (Codex) passed through as is. Empty means nothing was attempted.
+	Outcome string
+	// Reason is the backend's own reason for the outcome, when it gives one
+	// (Claude: "surface", "cli_version", "paused", …).
+	Reason string
+	// RetryAt is when the backend accepts the next reset, when it said.
+	RetryAt time.Time
+}
+
+// String renders r for a log line: the outcome, and the reason when given.
+func (r RedeemResult) String() string {
+	if r.Reason == "" || r.Reason == r.Outcome {
+		return r.Outcome
+	}
+	return r.Outcome + " (" + r.Reason + ")"
+}
 
 // ResetCreditRedeemer is optionally implemented by providers that can spend a
 // banked rate-limit reset credit. Redeeming is irreversible, so it never
 // happens as a side effect of reading usage.
+//
+// A redemption whose outcome is unknown — the response was lost, or the
+// backend could not confirm it — is an error, and the provider remembers its
+// request (on disk, shared by every limitping process), so whichever call next
+// tries the same reset repeats that request instead of spending a second one.
 type ResetCreditRedeemer interface {
-	// RedeemResetCredit spends the next available credit unconditionally and
-	// returns the backend's outcome.
-	RedeemResetCredit(ctx context.Context) (outcome string, err error)
+	// RedeemResetCredit spends credit — one ReadUsage reported as redeemable —
+	// unconditionally and returns the backend's answer. A provider whose
+	// backend picks the credit itself (Codex) ignores which one is passed.
+	RedeemResetCredit(ctx context.Context, credit usage.ResetCredit) (RedeemResult, error)
 	// AutoRedeemResetCredit spends one only when u shows a credit about to
-	// lapse, returning an empty outcome when nothing was attempted. It is
+	// lapse, returning an empty Outcome when nothing was attempted. It is
 	// throttled internally, so a polling caller may call it every cycle.
-	AutoRedeemResetCredit(ctx context.Context, u *usage.Usage) (outcome string, err error)
+	AutoRedeemResetCredit(ctx context.Context, u *usage.Usage) (RedeemResult, error)
+}
+
+// ResetCreditReader is implemented by providers whose reset credits are too
+// costly to read on every poll (Claude's need a request presenting as Claude
+// Code), so ReadUsage leaves them out. Commands the user runs to see or spend
+// them read usage through this instead.
+type ResetCreditReader interface {
+	// ReadUsageWithResetCredits is ReadUsage with the reset credits filled in
+	// when they can be read; when they cannot, Usage.ResetCreditsError says why.
+	ReadUsageWithResetCredits(ctx context.Context) (*usage.Usage, error)
+}
+
+// AutoRedeemReader is implemented by the same providers as ResetCreditReader.
+// A polling loop that spends resets on its own (auto_redeem) reads usage
+// through it, and only such a loop: the reset credits then ride along on the
+// provider's own, sparse cadence, instead of costing every one-shot command
+// that happens to read usage a request of their own.
+type AutoRedeemReader interface {
+	ReadUsageForAutoRedeem(ctx context.Context) (*usage.Usage, error)
+}
+
+// ReadUsageForLoop is how a polling loop reads p: through ReadUsageForAutoRedeem
+// when the loop will auto-redeem and p offers it, else plainly.
+func ReadUsageForLoop(ctx context.Context, p Provider, autoRedeem bool) (*usage.Usage, error) {
+	if r, ok := p.(AutoRedeemReader); ok && autoRedeem {
+		return r.ReadUsageForAutoRedeem(ctx)
+	}
+	return p.ReadUsage(ctx)
+}
+
+// RedeemHTTPError is a redemption request the backend answered with an HTTP
+// error rather than an outcome.
+type RedeemHTTPError struct {
+	StatusCode int
+	Body       string
+}
+
+func (e *RedeemHTTPError) Error() string {
+	if e.Body == "" {
+		return fmt.Sprintf("the redeem request returned HTTP %d", e.StatusCode)
+	}
+	return fmt.Sprintf("the redeem request returned HTTP %d: %s", e.StatusCode, e.Body)
+}
+
+// Refused reports whether the backend refused the request as such — a client
+// error — so the same request would only be refused again and nothing was
+// spent. Timeout, conflict, too-early and rate-limit answers are about the
+// moment rather than the request, and leave the outcome open like a 5xx does.
+func (e *RedeemHTTPError) Refused() bool {
+	switch e.StatusCode {
+	case http.StatusRequestTimeout, http.StatusConflict, http.StatusTooEarly, http.StatusTooManyRequests:
+		return false
+	}
+	return e.StatusCode >= 400 && e.StatusCode < 500
+}
+
+// asRedeemHTTPError restates a failed redemption request's UsageHTTPError —
+// fetchWithAuth's error for every endpoint — as the redeem error it is.
+func asRedeemHTTPError(err error) error {
+	var httpErr *UsageHTTPError
+	if errors.As(err, &httpErr) {
+		return &RedeemHTTPError{StatusCode: httpErr.StatusCode, Body: httpErr.Body}
+	}
+	return err
 }
 
 // TriggerResult reports what a Trigger did, including the token usage the ping

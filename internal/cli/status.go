@@ -46,7 +46,7 @@ func newStatusCmd() *cobra.Command {
 			if len(providers) == 0 {
 				return fmt.Errorf("no providers enabled in config")
 			}
-			return runStatus(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), text, providers, verbose, jsonOut, cfg.UsageDisplay)
+			return runStatus(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), text, providers, verbose, jsonOut, cfg.UsageDisplay, true)
 		},
 	}
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, text.statusVerboseFlag)
@@ -54,7 +54,7 @@ func newStatusCmd() *cobra.Command {
 	return cmd
 }
 
-func runStatus(ctx context.Context, out, progress io.Writer, text cliText, providers []provider.Provider, verbose, jsonOut bool, display string) error {
+func runStatus(ctx context.Context, out, progress io.Writer, text cliText, providers []provider.Provider, verbose, jsonOut bool, display string, withResetCredits bool) error {
 	if progress == nil {
 		progress = io.Discard
 	}
@@ -76,8 +76,12 @@ func runStatus(ctx context.Context, out, progress io.Writer, text cliText, provi
 		if text.statusFetchingFmt != "" {
 			fmt.Fprintf(progress, text.statusFetchingFmt, p.Name())
 		}
+		read := p.ReadUsage
+		if withResetCredits {
+			read = func(ctx context.Context) (*usage.Usage, error) { return readUsageWithResetCredits(ctx, p) }
+		}
 		readCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		u, err := p.ReadUsage(readCtx)
+		u, err := read(readCtx)
 		cancel()
 		day := <-spendCh
 		if err != nil {
@@ -124,13 +128,23 @@ type statusJSON struct {
 	Plan         string            `json:"plan,omitempty"`
 	FiveHour     *windowJSON       `json:"five_hour,omitempty"`
 	Weekly       *windowJSON       `json:"weekly,omitempty"`
+	Scoped       []scopedJSON      `json:"scoped_limits,omitempty"`
 	Credits      *creditsJSON      `json:"credits,omitempty"`
 	ResetCredits *resetCreditsJSON `json:"reset_credits,omitempty"`
-	Today        *todayJSON        `json:"today,omitempty"`
-	LimitReached bool              `json:"limit_reached"`
-	FetchedAt    string            `json:"fetched_at,omitempty"`
-	Raw          json.RawMessage   `json:"raw,omitempty"`
-	Error        string            `json:"error,omitempty"`
+	// Why the reset credits could not be read, when they could not.
+	ResetCreditsError string          `json:"reset_credits_error,omitempty"`
+	Today             *todayJSON      `json:"today,omitempty"`
+	LimitReached      bool            `json:"limit_reached"`
+	FetchedAt         string          `json:"fetched_at,omitempty"`
+	Raw               json.RawMessage `json:"raw,omitempty"`
+	Error             string          `json:"error,omitempty"`
+}
+
+// scopedJSON is a limit narrower than the plan-wide windows, e.g. one model's
+// weekly cap.
+type scopedJSON struct {
+	Label string `json:"label"`
+	*windowJSON
 }
 
 type windowJSON struct {
@@ -151,6 +165,11 @@ type creditsJSON struct {
 type resetCreditsJSON struct {
 	AvailableCount int               `json:"available_count"`
 	Credits        []resetCreditJSON `json:"credits,omitempty"`
+	// Why the provider offers this caller no reset cards (Claude's
+	// ineligible_reason), when that is worth knowing.
+	UnavailableReason string `json:"unavailable_reason,omitempty"`
+	// When the backend next accepts a reset, if it has said.
+	CooldownUntil string `json:"cooldown_until,omitempty"`
 }
 
 type resetCreditJSON struct {
@@ -158,6 +177,13 @@ type resetCreditJSON struct {
 	GrantedAt  string `json:"granted_at,omitempty"`
 	ExpiresAt  string `json:"expires_at,omitempty"`
 	RedeemedAt string `json:"redeemed_at,omitempty"`
+	// Claude reset cards only.
+	ID            string   `json:"id,omitempty"`
+	Label         string   `json:"label,omitempty"`
+	Left          int      `json:"left,omitempty"`
+	Total         int      `json:"total,omitempty"`
+	Clears        []string `json:"clears,omitempty"`
+	RequiresLimit bool     `json:"requires_limit,omitempty"`
 }
 
 // todayJSON is the local day's token consumption, read from the provider CLI's
@@ -196,6 +222,9 @@ func newStatusJSON(u *usage.Usage, verbose bool, day *spend.Day) statusJSON {
 	if !u.Weekly.Missing() {
 		s.Weekly = newWindowJSON(u.Weekly)
 	}
+	for _, l := range u.ScopedLimits {
+		s.Scoped = append(s.Scoped, scopedJSON{Label: l.Label, windowJSON: newWindowJSON(l.Window)})
+	}
 	if !u.FetchedAt.IsZero() {
 		s.FetchedAt = u.FetchedAt.Format(time.RFC3339)
 	}
@@ -208,6 +237,9 @@ func newStatusJSON(u *usage.Usage, verbose bool, day *spend.Day) statusJSON {
 	}
 	if u.ResetCredits != nil {
 		s.ResetCredits = newResetCreditsJSON(u.ResetCredits)
+	}
+	if u.ResetCreditsError != nil {
+		s.ResetCreditsError = u.ResetCreditsError.Error()
 	}
 	s.Today = newTodayJSON(day)
 	if verbose && json.Valid(u.Raw) {
@@ -232,15 +264,23 @@ func newWindowJSON(w usage.Window) *windowJSON {
 
 func newResetCreditsJSON(rc *usage.ResetCredits) *resetCreditsJSON {
 	out := &resetCreditsJSON{
-		AvailableCount: rc.AvailableCount,
-		Credits:        make([]resetCreditJSON, 0, len(rc.Credits)),
+		AvailableCount:    rc.AvailableCount,
+		Credits:           make([]resetCreditJSON, 0, len(rc.Credits)),
+		UnavailableReason: rc.UnavailableReason,
+		CooldownUntil:     timeJSON(rc.CooldownUntil),
 	}
 	for _, c := range rc.Credits {
 		out.Credits = append(out.Credits, resetCreditJSON{
-			Status:     c.Status,
-			GrantedAt:  timeJSON(c.GrantedAt),
-			ExpiresAt:  timeJSON(c.ExpiresAt),
-			RedeemedAt: timeJSON(c.RedeemedAt),
+			Status:        c.Status,
+			GrantedAt:     timeJSON(c.GrantedAt),
+			ExpiresAt:     timeJSON(c.ExpiresAt),
+			RedeemedAt:    timeJSON(c.RedeemedAt),
+			ID:            c.ID,
+			Label:         c.Label,
+			Left:          c.Left,
+			Total:         c.Total,
+			Clears:        c.Clears,
+			RequiresLimit: c.RequiresLimit,
 		})
 	}
 	return out
@@ -295,6 +335,9 @@ func printUsage(out io.Writer, text cliText, u *usage.Usage, verbose bool, displ
 	fmt.Fprintf(out, "%s%s\n", u.Provider, plan)
 	fmt.Fprintf(out, text.statusFiveHourLineFmt, fmtWindow(text, u.FiveHour, display))
 	fmt.Fprintf(out, text.statusWeeklyLineFmt, fmtWindow(text, u.Weekly, display))
+	for _, l := range u.ScopedLimits {
+		fmt.Fprintf(out, text.statusScopedLineFmt, l.Label, fmtWindow(text, l.Window, display))
+	}
 	printToday(out, text, day, verbose)
 	if u.Credits != nil && (u.Credits.HasCredits || u.Credits.Unlimited) {
 		if u.Credits.Unlimited {
@@ -304,6 +347,11 @@ func printUsage(out io.Writer, text cliText, u *usage.Usage, verbose bool, displ
 		}
 	}
 	printResetCredits(out, text, u.ResetCredits)
+	// A card read that failed is not the same as holding none, but saying so
+	// on every status would be noise for the many accounts that never hold any.
+	if verbose && u.ResetCreditsError != nil {
+		fmt.Fprintf(out, text.statusResetCreditsUnreadFmt, u.ResetCreditsError)
+	}
 	if verbose {
 		fmt.Fprintf(out, "  raw: %s\n", string(u.Raw))
 	}
@@ -383,6 +431,10 @@ func fmtUSD(v float64) string {
 }
 
 func printResetCredits(out io.Writer, text cliText, rc *usage.ResetCredits) {
+	if rc != nil && rc.UnavailableReason != "" {
+		fmt.Fprintf(out, text.statusResetCreditsUnavailableFmt, resetCardsUnavailableText(text, rc.UnavailableReason))
+		return
+	}
 	if rc == nil || (rc.AvailableCount == 0 && len(rc.Credits) == 0) {
 		return
 	}
@@ -412,6 +464,19 @@ func resetCreditLine(text cliText, c usage.ResetCredit) string {
 		}
 	}
 	parts := []string{creditStatusWord(text, status)}
+	if c.Label != "" {
+		parts = append(parts, c.Label)
+	}
+	// A multi-use grant; a single reset needs no count.
+	if c.Total > 1 {
+		parts = append(parts, fmt.Sprintf(text.statusCreditLeftFmt, c.Left, c.Total))
+	}
+	if windows := clearedWindowNames(text, c.Clears); windows != "" {
+		parts = append(parts, fmt.Sprintf(text.statusCreditClearsFmt, windows))
+	}
+	if c.RequiresLimit {
+		parts = append(parts, text.statusCreditAtLimitOnly)
+	}
 	if !c.GrantedAt.IsZero() {
 		parts = append(parts, fmt.Sprintf(text.statusCreditGrantedFmt, c.GrantedAt.Local().Format(text.statusCreditTimeLayout)))
 	}
@@ -443,9 +508,33 @@ func creditStatusWord(text cliText, status string) string {
 		return text.statusCreditRedeemed
 	case "expired":
 		return text.statusCreditExpired
+	case provider.ClaudeGrantQueued:
+		return text.statusCreditQueued
+	case provider.ClaudeGrantPaused:
+		return text.statusCreditPaused
+	case provider.ClaudeGrantPending:
+		return text.statusCreditPending
 	default:
 		return status
 	}
+}
+
+// clearedWindowNames renders the windows a reset restores ("5h + weekly").
+// Limits limitping has no name for (Claude's per-model weekly buckets) are
+// shown as the provider names them.
+func clearedWindowNames(text cliText, clears []string) string {
+	names := make([]string, 0, len(clears))
+	for _, w := range clears {
+		switch w {
+		case usage.ClearsFiveHour:
+			names = append(names, text.statusClearsFiveHour)
+		case usage.ClearsWeekly:
+			names = append(names, text.statusClearsWeekly)
+		default:
+			names = append(names, w)
+		}
+	}
+	return strings.Join(names, " + ")
 }
 
 func fmtWindow(text cliText, w usage.Window, display string) string {

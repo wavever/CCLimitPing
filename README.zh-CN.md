@@ -38,9 +38,10 @@ codex   ✓ pinged (14s, 19,426 tok (in 19,414 / out 12), $0.0023)
 - 通过 CLI 钩子识别正在进行中的 Claude/Codex 会话,不会打断本来就要自己起算窗口的会话。
 - 自动续跑挂起的任务:`limitping continue <provider>` 代理官方 CLI,在 5h 限额恢复的
   瞬间自动输入续跑消息,让整夜的任务不用一直停在限额处等你回来。
-- 在 Codex 重置卡过期前用掉它:`limitping redeem` 手动兑换;开启 `auto_redeem = true`
-  后,`watch` / `continue` 会在卡临近过期时自动使用 —— 攒着的重置卡一旦过期就归零。
-  因为兑换不可撤销,默认关闭。
+- 在重置卡过期前用掉它 —— 包括 Codex 重置卡和 Claude 重置卡(Anthropic 不定期发放的
+  一次性额度重置,例如新模型发布时):`status` 会列出它们,`limitping redeem` 手动兑换;
+  开启 `auto_redeem = true` 后,`watch` / `continue` 会在卡临近过期时自动使用 ——
+  攒着的重置卡一旦过期就归零。因为兑换不可撤销,默认关闭。
 - 命令名可以更短:所有命令都能用 `lmp` 触发(例如 `lmp s`、`lmp w`)。
 - 内置 dry-run、周限额保护、重置缓冲、低成本模型默认值、macOS 通知、本地配置,且不带遥测。
 
@@ -87,7 +88,11 @@ limitping bg logs -f
   (设置了 `CLAUDE_CONFIG_DIR` 时与 Claude Code 一样改用该目录)里的 OAuth token,读
   `GET https://api.anthropic.com/api/oauth/usage`。触发使用带
   TTY 的交互式 `claude "<prompt>"` 会话,因此在 headless print 命令改走 Agent
-  SDK/API credits 后仍会起算 Claude 订阅窗口。如果用量端点返回语义不明的
+  SDK/API credits 后仍会起算 Claude 订阅窗口。ping 尽量精简:用独立的 `--session-id`
+  运行、结束后删除其会话记录(以前每次 ping 都会在 `claude --resume` 里留下一条 "."
+  会话),并关闭你的钩子(`disableAllHooks`)、不启动 MCP(`--strict-mcp-config`)、不带
+  工具(`--tools ""`)、不读 CLAUDE.md —— 每个参数都只在已安装的 Claude Code 支持时才加。
+  如果用量端点返回语义不明的
   429,limitping 会调用免费且不创建 Message 的 token-counting 端点,区分真实的
   端点限流与 Claude Code 订阅访问被禁用。
 - **Codex**:用 `~/.codex/auth.json` 里的 OAuth token,读
@@ -204,6 +209,7 @@ limitping bg logs -f           # 持续查看后台监听的日志
 limitping bg stop              # 停止后台监听
 limitping hooks install        # 安装活跃会话检测钩子(claude|codex|all)
 limitping hooks uninstall      # 移除这些钩子
+limitping hooks status         # 检查是否已安装、是否最新、(Codex)是否已信任
 limitping version              # 打印版本号(简称: v、ver)
 limitping upgrade              # 更新到最新 GitHub Release(简称: up; update 是别名)
 limitping uninstall            # 删除 limitping 以及配置/缓存(简称: rm、remove)

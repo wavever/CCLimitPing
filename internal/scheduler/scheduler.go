@@ -115,7 +115,7 @@ func (s *Scheduler) runTarget(ctx context.Context, t Target) {
 
 		s.live.set(name, "checking usage…", time.Time{})
 		rctx, cancel := context.WithTimeout(ctx, readTimeout)
-		u, err := t.Provider.ReadUsage(rctx)
+		u, err := provider.ReadUsageForLoop(rctx, t.Provider, s.autoRedeems(t))
 		cancel()
 		if err != nil {
 			var httpErr *provider.UsageHTTPError
@@ -305,24 +305,31 @@ func (s *Scheduler) weeklyExhausted(u *usage.Usage) bool {
 // a failure is logged and never breaks the loop.
 func (s *Scheduler) redeemExpiringCredit(ctx context.Context, t Target, u *usage.Usage) bool {
 	redeemer, ok := t.Provider.(provider.ResetCreditRedeemer)
-	if !t.AutoRedeem || !ok || s.dryRun {
+	if !ok || !s.autoRedeems(t) {
 		return false
 	}
 	name := t.Provider.Name()
 	rctx, cancel := context.WithTimeout(ctx, readTimeout)
-	outcome, err := redeemer.AutoRedeemResetCredit(rctx, u)
+	res, err := redeemer.AutoRedeemResetCredit(rctx, u)
 	cancel()
 	switch {
 	case err != nil:
 		s.log.Printf("[%s] reset credit redeem failed: %v", name, err)
-	case outcome == provider.RedeemReset:
+	case res.Outcome == provider.RedeemReset:
 		s.log.Printf("[%s] redeemed an expiring reset credit; rate-limit windows reset", name)
 		s.notify(name+": reset credit redeemed", "An expiring reset credit was spent; the windows are reset")
 		return true
-	case outcome != "":
-		s.log.Printf("[%s] reset credit not spent: %s", name, outcome)
+	case res.Outcome != "":
+		s.log.Printf("[%s] reset credit not spent: %s", name, res)
 	}
 	return false
+}
+
+// autoRedeems reports whether t's loop spends reset credits on its own, which
+// is what lets its usage reads carry the credits (provider.ReadUsageForLoop).
+func (s *Scheduler) autoRedeems(t Target) bool {
+	_, ok := t.Provider.(provider.ResetCreditRedeemer)
+	return t.AutoRedeem && ok && !s.dryRun
 }
 
 func activeProviderTask(ctx context.Context, p provider.Provider) (string, bool, error) {

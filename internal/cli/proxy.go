@@ -143,7 +143,8 @@ func watchAndContinue(ctx context.Context, p provider.Provider, inject *sessionI
 	}
 	for {
 		rctx, cancel := context.WithTimeout(ctx, proxyReadTimeout)
-		u, err := p.ReadUsage(rctx)
+		// Only a loop that auto-redeems lets its reads carry the reset credits.
+		u, err := provider.ReadUsageForLoop(rctx, p, autoRedeem)
 		cancel()
 
 		switch {
@@ -183,16 +184,16 @@ func redeemExpiringCredit(ctx context.Context, p provider.Provider, u *usage.Usa
 		return false
 	}
 	rctx, cancel := context.WithTimeout(ctx, proxyReadTimeout)
-	outcome, err := redeemer.AutoRedeemResetCredit(rctx, u)
+	res, err := redeemer.AutoRedeemResetCredit(rctx, u)
 	cancel()
 	switch {
 	case err != nil:
 		lg.logf("reset credit redeem failed: %v", err)
-	case outcome == provider.RedeemReset:
+	case res.Outcome == provider.RedeemReset:
 		lg.logf("REDEEMED an expiring reset credit — rate-limit windows reset")
 		return true
-	case outcome != "":
-		lg.logf("reset credit not spent: %s", outcome)
+	case res.Outcome != "":
+		lg.logf("reset credit not spent: %s", res)
 	}
 	return false
 }

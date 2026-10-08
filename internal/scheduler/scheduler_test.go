@@ -113,6 +113,71 @@ func TestRunTargetSleepsWhileFiveHourWindowActive(t *testing.T) {
 	}
 }
 
+// redeemingStub is a provider that can auto-redeem, and counts the reads that
+// would carry its reset credits (ReadUsageForAutoRedeem) apart from plain ones.
+type redeemingStub struct {
+	stubProvider
+	autoReads int
+}
+
+func (p *redeemingStub) ReadUsageForAutoRedeem(context.Context) (*usage.Usage, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.autoReads++
+	return p.usage, nil
+}
+
+func (p *redeemingStub) RedeemResetCredit(context.Context, usage.ResetCredit) (provider.RedeemResult, error) {
+	return provider.RedeemResult{}, errors.New("not used")
+}
+
+func (p *redeemingStub) AutoRedeemResetCredit(context.Context, *usage.Usage) (provider.RedeemResult, error) {
+	return provider.RedeemResult{}, nil
+}
+
+// Only a target that will actually auto-redeem lets its reads carry the reset
+// credits; Claude's cost a request presenting as the Claude CLI.
+func TestRunTargetReadsResetCreditsOnlyWhenAutoRedeeming(t *testing.T) {
+	cases := []struct {
+		name       string
+		autoRedeem bool
+		dryRun     bool
+		wantAuto   bool
+	}{
+		{"auto_redeem off", false, false, false},
+		{"auto_redeem on", true, false, true},
+		{"dry run never redeems", true, true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &redeemingStub{stubProvider: stubProvider{usage: &usage.Usage{
+				FiveHour: usage.Window{UsedPercent: 25, ResetsAt: time.Now().Add(time.Second)},
+			}}}
+			target := Target{Provider: p, AutoRedeem: tc.autoRedeem}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			s := New(testConfig(), []Target{target}, tc.dryRun, false, io.Discard)
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				s.runTarget(ctx, target)
+			}()
+			waitFor(t, 200*time.Millisecond, func() bool {
+				p.mu.Lock()
+				defer p.mu.Unlock()
+				return p.reads+p.autoReads >= 1
+			})
+			cancel()
+			<-done
+			p.mu.Lock()
+			defer p.mu.Unlock()
+			if gotAuto := p.autoReads > 0; gotAuto != tc.wantAuto || (p.reads > 0) == tc.wantAuto {
+				t.Fatalf("plain reads %d, auto-redeem reads %d; want auto-redeem reads %t", p.reads, p.autoReads, tc.wantAuto)
+			}
+		})
+	}
+}
+
 // A window that only a limitping ping has touched reports 0% used — Codex
 // rounds used_percent to whole numbers, so ~20k tokens is 0. The scheduler must
 // still see it as running; reading it as "free" made the loop fall through to a

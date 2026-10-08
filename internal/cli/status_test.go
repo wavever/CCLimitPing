@@ -49,7 +49,7 @@ func TestRunStatusPrintsProgressBeforeReadUsage(t *testing.T) {
 		},
 	}
 
-	if err := runStatus(context.Background(), &out, &progress, enText, []provider.Provider{p}, false, false, "used"); err != nil {
+	if err := runStatus(context.Background(), &out, &progress, enText, []provider.Provider{p}, false, false, "used", true); err != nil {
 		t.Fatalf("runStatus() error = %v", err)
 	}
 	if !strings.Contains(out.String(), "codex\n") {
@@ -74,7 +74,7 @@ func TestRunStatusJSON(t *testing.T) {
 		fakeStatusProvider{name: "claude", err: errors.New("boom")},
 	}
 
-	err := runStatus(context.Background(), &out, &progress, enText, providers, false, true, "used")
+	err := runStatus(context.Background(), &out, &progress, enText, providers, false, true, "used", true)
 	if err == nil {
 		t.Fatalf("runStatus() error = nil, want failure for the erroring provider")
 	}
@@ -113,7 +113,7 @@ func TestRunStatusLocalizesClaudeSubscriptionAccessError(t *testing.T) {
 	var out bytes.Buffer
 	p := fakeStatusProvider{name: "claude", err: &provider.ClaudeSubscriptionAccessError{}}
 
-	err := runStatus(context.Background(), &out, io.Discard, zhText, []provider.Provider{p}, false, false, "used")
+	err := runStatus(context.Background(), &out, io.Discard, zhText, []provider.Provider{p}, false, false, "used", true)
 	if err == nil {
 		t.Fatal("runStatus() error = nil, want provider failure")
 	}
@@ -129,7 +129,7 @@ func TestRunStatusJSONPreservesClaudeSubscriptionError(t *testing.T) {
 	var out bytes.Buffer
 	p := fakeStatusProvider{name: "claude", err: &provider.ClaudeSubscriptionAccessError{}}
 
-	err := runStatus(context.Background(), &out, io.Discard, zhText, []provider.Provider{p}, false, true, "used")
+	err := runStatus(context.Background(), &out, io.Discard, zhText, []provider.Provider{p}, false, true, "used", true)
 	if err == nil {
 		t.Fatal("runStatus() error = nil, want provider failure")
 	}
@@ -248,6 +248,128 @@ func TestPrintUsageIncludesResetCredits(t *testing.T) {
 	}
 	if !strings.Contains(got, "(in 29d") {
 		t.Fatalf("status output = %q, want remaining lifetime on the expires part", got)
+	}
+}
+
+// Reset cards the server withholds are said to be withheld, rather than the
+// card line silently missing.
+func TestPrintUsageSaysWhyResetCardsAreWithheld(t *testing.T) {
+	for reason, want := range map[string]string{
+		"cli_version": "reset credits not offered: Anthropic did not recognize limitping as the Claude CLI (cli_version)",
+		"tier":        "reset credits not offered to this account (tier)",
+	} {
+		u := &usage.Usage{Provider: "claude", ResetCredits: &usage.ResetCredits{UnavailableReason: reason}}
+		var out bytes.Buffer
+		printUsage(&out, enText, u, false, "used", nil)
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("status output = %q, want it to contain %q", out.String(), want)
+		}
+		var zh bytes.Buffer
+		printUsage(&zh, zhText, u, false, "used", nil)
+		if !strings.Contains(zh.String(), reason) {
+			t.Fatalf("zh status output = %q, want the reason", zh.String())
+		}
+	}
+}
+
+func TestPrintUsageVerboseSaysTheCardsCouldNotBeRead(t *testing.T) {
+	u := &usage.Usage{Provider: "claude", ResetCreditsError: errors.New("the reset-card request was refused")}
+	var quiet, verbose bytes.Buffer
+	printUsage(&quiet, enText, u, false, "used", nil)
+	printUsage(&verbose, enText, u, true, "used", nil)
+	if strings.Contains(quiet.String(), "could not be read") {
+		t.Fatalf("status output = %q, want the read failure only under -v", quiet.String())
+	}
+	if !strings.Contains(verbose.String(), "reset credits could not be read: the reset-card request was refused") {
+		t.Fatalf("status -v output = %q, want the read failure", verbose.String())
+	}
+	j := newStatusJSON(u, false, nil)
+	if j.ResetCreditsError == "" {
+		t.Fatal("status --json dropped the read failure")
+	}
+}
+
+func TestPrintUsageDescribesClaudeResetCards(t *testing.T) {
+	u := &usage.Usage{
+		Provider: "claude",
+		ResetCredits: &usage.ResetCredits{
+			AvailableCount: 3,
+			Credits: []usage.ResetCredit{
+				{
+					Status:    "available",
+					ID:        "opus55-launch",
+					Label:     "Opus 5.5 launch",
+					Left:      1,
+					Total:     1,
+					Clears:    []string{usage.ClearsFiveHour, usage.ClearsWeekly},
+					ExpiresAt: time.Now().Add(21*24*time.Hour + 2*time.Hour),
+				},
+				{
+					Status:        provider.ClaudeGrantQueued,
+					ID:            "loyalty",
+					Label:         "Loyalty",
+					Left:          2,
+					Total:         3,
+					Clears:        []string{usage.ClearsFiveHour},
+					RequiresLimit: true,
+				},
+			},
+		},
+	}
+
+	cases := map[string]struct {
+		text cliText
+		want []string
+	}{
+		"en": {enText, []string{
+			"reset credits 3 resets available",
+			"available, Opus 5.5 launch, resets 5h + weekly, expires",
+			"(in 21d",
+			"queued behind another card, Loyalty, 2 of 3 left, resets 5h, only at the limit",
+		}},
+		"zh": {zhText, []string{
+			"重置券 3 张可用",
+			"可用，Opus 5.5 launch，可重置 5h + 周限额，有效期至",
+			"排在另一张之后，Loyalty，剩 2/3 次，可重置 5h，仅在触顶时可用",
+		}},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			var out bytes.Buffer
+			printUsage(&out, tc.text, u, false, "used", nil)
+			got := out.String()
+			for _, want := range tc.want {
+				if !strings.Contains(got, want) {
+					t.Fatalf("status output = %q, want it to contain %q", got, want)
+				}
+			}
+			// A single-use card needs no "1 of 1 left".
+			if strings.Contains(got, "1 of 1") || strings.Contains(got, "1/1") {
+				t.Fatalf("status output = %q, want no count on a single-use card", got)
+			}
+		})
+	}
+}
+
+func TestStatusJSONCarriesClaudeResetCardDetails(t *testing.T) {
+	u := &usage.Usage{Provider: "claude", ResetCredits: &usage.ResetCredits{
+		AvailableCount: 1,
+		Credits: []usage.ResetCredit{{
+			Status: "available", ID: "opus55-launch", Label: "Opus 5.5 launch",
+			Left: 1, Total: 1, Clears: []string{usage.ClearsFiveHour, usage.ClearsWeekly},
+		}},
+	}}
+	raw, err := json.Marshal(newStatusJSON(u, false, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"id":"opus55-launch"`, `"label":"Opus 5.5 launch"`, `"left":1`, `"clears":["five_hour","seven_day"]`} {
+		if !strings.Contains(string(raw), want) {
+			t.Fatalf("status JSON = %s, want it to contain %s", raw, want)
+		}
+	}
+	if strings.Contains(string(raw), "requires_limit") {
+		t.Fatalf("status JSON = %s, want requires_limit omitted when false", raw)
 	}
 }
 

@@ -46,10 +46,12 @@ codex   ✓ pinged (14s, 19,426 tok (in 19,414 / out 12), $0.0023)
 - Auto-resumes parked tasks: `limitping continue <provider>` proxies the
   official CLI and types your continue message the moment the 5h limit
   recovers, so an overnight task doesn't sit at the limit until morning.
-- Spends Codex reset credits before they lapse: `limitping redeem` cashes one in
-  by hand, and `auto_redeem = true` lets `watch` / `continue` spend one on its
-  own once it is close to expiring — a banked reset is worth nothing after it
-  expires. Off by default, because redeeming is irreversible.
+- Spends reset credits before they lapse — Codex reset credits and Claude reset
+  cards (the one-off usage-limit resets Anthropic hands out, e.g. at a model
+  launch): `status` lists them, `limitping redeem` cashes one in by hand, and
+  `auto_redeem = true` lets `watch` / `continue` spend one on its own once it is
+  close to expiring — a banked reset is worth nothing after it expires. Off by
+  default, because redeeming is irreversible.
 - Types short: every command also works as `lmp` (e.g. `lmp s`, `lmp w`).
 - Includes dry-run modes, weekly-limit guards, reset buffers, cheap-model
   defaults, macOS notifications, local config, and no telemetry.
@@ -102,7 +104,12 @@ the window resets.
   Claude Code itself does. Triggering uses a TTY-backed interactive
   `claude "<prompt>"` session, so it continues to start the Claude
   subscription-backed window after the headless print command moves to Agent
-  SDK/API credits. If the usage endpoint returns an ambiguous 429, limitping
+  SDK/API credits. The ping is kept as bare as the interactive CLI allows: it
+  runs under its own `--session-id` and its transcript is deleted afterwards
+  (pings used to pile up as "." conversations in `claude --resume`), with your
+  hooks off (`disableAllHooks`), no MCP servers (`--strict-mcp-config`), no
+  tools (`--tools ""`) and no CLAUDE.md — each flag only when the installed
+  Claude Code supports it. If the usage endpoint returns an ambiguous 429, limitping
   uses the free token-counting endpoint (which does not create a Message) to
   distinguish a real endpoint throttle from Claude Code subscription access
   being disabled.
@@ -230,6 +237,7 @@ limitping bg logs -f           # follow the background watcher's log
 limitping bg stop              # stop the background watcher
 limitping hooks install        # install active-session detection hooks (claude|codex|all)
 limitping hooks uninstall      # remove those hooks
+limitping hooks status         # check they are installed, current and (Codex) trusted
 limitping version              # print the version (aliases: v, ver)
 limitping upgrade              # update to the latest GitHub release (aliases: up, update)
 limitping uninstall            # remove limitping plus config/cache (aliases: rm, remove)

@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -55,6 +55,7 @@ type Codex struct {
 
 	redeemMu   sync.Mutex
 	lastRedeem time.Time // last automatic redemption attempt, for the cooldown
+	attempts   redeemAttempts
 }
 
 func NewCodex(cfg config.ProviderConfig) *Codex {
@@ -82,6 +83,8 @@ func (c *Codex) ReadUsage(ctx context.Context) (*usage.Usage, error) {
 		// The detail endpoint is private and may go away; the usage response
 		// itself now embeds the available count, so keep at least that.
 		u.ResetCredits = &usage.ResetCredits{AvailableCount: r.ResetCredits.AvailableCount}
+	} else {
+		u.ResetCreditsError = err
 	}
 	return u, nil
 }
@@ -90,42 +93,109 @@ func (c *Codex) Trigger(ctx context.Context, dryRun bool) (*TriggerResult, error
 	return triggerCodex(ctx, c.cfg, dryRun)
 }
 
-// RedeemResetCredit spends the next available reset credit right now. Each call
-// is a distinct attempt, so it carries a fresh idempotency key.
-func (c *Codex) RedeemResetCredit(ctx context.Context) (string, error) {
-	return c.consumeResetCredit(ctx, randomIdempotencyKey())
+// RedeemResetCredit spends credit right now — or, when it carries no id, the
+// next available one, which the backend then picks. Each call is a distinct
+// attempt, so it carries a fresh idempotency key — unless an earlier attempt at
+// the same credit is still in doubt, which it then repeats (see pendingClaims).
+func (c *Codex) RedeemResetCredit(ctx context.Context, credit usage.ResetCredit) (RedeemResult, error) {
+	res, _, err := c.claim(ctx, credit, randomIdempotencyKey())
+	return res, err
 }
 
 // AutoRedeemResetCredit spends a credit that is about to lapse, at most once per
 // codexRedeemCooldown. The key is derived from the credit itself, so an attempt
 // whose response was lost in flight is retried — after the cooldown — under the
 // same key and cannot spend a second credit.
-func (c *Codex) AutoRedeemResetCredit(ctx context.Context, u *usage.Usage) (string, error) {
+func (c *Codex) AutoRedeemResetCredit(ctx context.Context, u *usage.Usage) (RedeemResult, error) {
 	credit, ok := u.ResetCreditToRedeem(time.Now())
 	if !ok {
-		return "", nil
+		return RedeemResult{}, nil
 	}
 	c.redeemMu.Lock()
 	if time.Since(c.lastRedeem) < codexRedeemCooldown {
 		c.redeemMu.Unlock()
-		return "", nil
+		return RedeemResult{}, nil
 	}
 	c.lastRedeem = time.Now()
 	c.redeemMu.Unlock()
-	return c.consumeResetCredit(ctx, creditIdempotencyKey(credit))
+	base := codexCreditKeyBase(credit)
+	res, s, err := c.claim(ctx, credit, c.attempts.key(base))
+	c.attempts.settle(base, s)
+	return res, err
 }
 
-// consumeResetCredit redeems one banked reset credit. The credit id is
-// deliberately omitted: the backend then picks the next available credit — the
-// same one the policy targets — so we don't depend on an id field this private
-// endpoint doesn't document.
-func (c *Codex) consumeResetCredit(ctx context.Context, idempotencyKey string) (string, error) {
-	payload, err := json.Marshal(map[string]string{"idempotency_key": idempotencyKey})
+// claim redeems credit under idempotencyKey, or under the key of an earlier
+// attempt at it that is still in doubt, and records how it ended. The
+// outcomes Codex documents are definite; an error, or a code this version does
+// not know, leaves the attempt in doubt.
+func (c *Codex) claim(ctx context.Context, credit usage.ResetCredit, idempotencyKey string) (RedeemResult, claimSettlement, error) {
+	account, _ := c.auth.AccountID(ctx)
+	return pendingClaims{provider: "codex"}.claim(codexCreditKeyBase(credit), account, credit.Left, idempotencyKey,
+		func(key string) (RedeemResult, claimSettlement, error) {
+			outcome, s, err := c.consumeResetCredit(ctx, credit.ID, key)
+			switch {
+			case err == nil && !codexOutcomeDefinite(outcome):
+				s = claimInDoubt
+			case err != nil && s == claimInDoubt:
+				err = fmt.Errorf("%w; the credit may still have been spent, so check 'limitping status' first. Trying again is safe: it repeats this same request, which cannot spend a second credit", err)
+			}
+			return RedeemResult{Outcome: outcome}, s, err
+		})
+}
+
+// codexOutcomeDefinite reports an outcome that settles an attempt.
+func codexOutcomeDefinite(outcome string) bool {
+	switch outcome {
+	case RedeemReset, RedeemNothingToReset, RedeemNoCredit, RedeemAlreadyRedeemed:
+		return true
+	}
+	return false
+}
+
+// consumeResetCredit redeems one banked reset credit: creditID when known (the
+// one the policy targets), else whichever the backend picks next. It goes
+// through Codex's app-server, whose consume method has a published schema; only
+// when that cannot be reached at all does it fall back to the private HTTP
+// endpoint the app-server itself calls.
+func (c *Codex) consumeResetCredit(ctx context.Context, creditID, idempotencyKey string) (string, claimSettlement, error) {
+	params := map[string]string{"idempotencyKey": idempotencyKey}
+	if creditID != "" {
+		params["creditId"] = creditID
+	}
+	result, err := codexAppServerCall(ctx, "account/rateLimitResetCredit/consume", params)
+	if errors.Is(err, errCodexAppServerUnavailable) {
+		return c.consumeResetCreditHTTP(ctx, creditID, idempotencyKey)
+	}
 	if err != nil {
-		return "", err
+		// The request reached the app-server, and possibly the backend.
+		return "", claimInDoubt, fmt.Errorf("codex reset credit consume: %w", err)
+	}
+	var r struct {
+		Outcome string `json:"outcome"`
+	}
+	if err := json.Unmarshal(result, &r); err != nil {
+		return "", claimInDoubt, fmt.Errorf("codex reset credit consume: parsing response: %w", err)
+	}
+	if r.Outcome == "" {
+		return "", claimInDoubt, fmt.Errorf("codex reset credit consume: no outcome in response: %s", truncate(result, 200))
+	}
+	return normalizeRedeemOutcome(r.Outcome), claimAnswered, nil
+}
+
+// consumeResetCreditHTTP is the fallback for a Codex without the app-server
+// method. The field names are the ones the Codex binary serializes for this
+// endpoint (redeem_request_id is its idempotency key).
+func (c *Codex) consumeResetCreditHTTP(ctx context.Context, creditID, idempotencyKey string) (string, claimSettlement, error) {
+	body := map[string]string{"redeem_request_id": idempotencyKey}
+	if creditID != "" {
+		body["credit_id"] = creditID
+	}
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return "", claimNotSent, err
 	}
 	accountID, _ := c.auth.AccountID(ctx)
-	body, err := fetchWithAuth(ctx, c.auth, func(token string) (*http.Request, error) {
+	resp, err := fetchWithAuth(ctx, c.auth, func(token string) (*http.Request, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, codexConsumeURL(), bytes.NewReader(payload))
 		if err != nil {
 			return nil, err
@@ -142,18 +212,19 @@ func (c *Codex) consumeResetCredit(ctx context.Context, idempotencyKey string) (
 		return req, nil
 	})
 	if err != nil {
-		return "", fmt.Errorf("codex reset credit consume: %w", err)
+		err = asRedeemHTTPError(err)
+		return "", settlementOf(err), fmt.Errorf("codex reset credit consume: %w", err)
 	}
 	var r struct {
 		Code string `json:"code"`
 	}
-	if err := json.Unmarshal(body, &r); err != nil {
-		return "", fmt.Errorf("codex reset credit consume: parsing response: %w", err)
+	if err := json.Unmarshal(resp, &r); err != nil {
+		return "", claimInDoubt, fmt.Errorf("codex reset credit consume: parsing response: %w", err)
 	}
 	if r.Code == "" {
-		return "", fmt.Errorf("codex reset credit consume: no outcome in response: %s", truncate(body, 200))
+		return "", claimInDoubt, fmt.Errorf("codex reset credit consume: no outcome in response: %s", truncate(resp, 200))
 	}
-	return normalizeRedeemOutcome(r.Code), nil
+	return normalizeRedeemOutcome(r.Code), claimAnswered, nil
 }
 
 // normalizeRedeemOutcome folds the two spellings of the same outcomes into the
@@ -181,11 +252,20 @@ func randomIdempotencyKey() string {
 	return hex.EncodeToString(b)
 }
 
-// creditIdempotencyKey derives a stable key from the credit being spent, so the
-// same credit always maps to the same logical attempt.
+// codexCreditKeyBase is the stable identity of the credit being spent: its id
+// when the backend gives one, else its expiry. Idempotency keys derive from it
+// (see redeemAttempts).
+func codexCreditKeyBase(c usage.ResetCredit) string {
+	if c.ID != "" {
+		return "limitping-reset-credit|id|" + c.ID
+	}
+	return "limitping-reset-credit|" + c.ExpiresAt.UTC().Format(time.RFC3339)
+}
+
+// creditIdempotencyKey is the key of the first attempt at spending c.
 func creditIdempotencyKey(c usage.ResetCredit) string {
-	sum := sha256.Sum256([]byte("limitping-reset-credit|" + c.ExpiresAt.UTC().Format(time.RFC3339)))
-	return hex.EncodeToString(sum[:16])
+	var first redeemAttempts
+	return first.key(codexCreditKeyBase(c))
 }
 
 func codexActiveTask(_ context.Context) (string, bool, error) {
@@ -244,6 +324,8 @@ type codexResetCreditsResp struct {
 }
 
 type codexResetCredit struct {
+	ID         string `json:"id"`
+	Title      string `json:"title"`
 	Status     string `json:"status"`
 	GrantedAt  string `json:"granted_at"`
 	ExpiresAt  string `json:"expires_at"`
@@ -329,6 +411,8 @@ func codexResetCreditsToUsage(r codexResetCreditsResp) *usage.ResetCredits {
 	credits := make([]usage.ResetCredit, 0, len(r.Credits))
 	for _, c := range r.Credits {
 		credits = append(credits, usage.ResetCredit{
+			ID:         c.ID,
+			Label:      c.Title,
 			Status:     c.Status,
 			GrantedAt:  parseCodexResetTime(c.GrantedAt),
 			ExpiresAt:  parseCodexResetTime(c.ExpiresAt),

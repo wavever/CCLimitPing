@@ -136,6 +136,51 @@ func TestResetCreditToRedeem(t *testing.T) {
 	}
 }
 
+func TestResetCreditToRedeemLeavesNeverExpiringResetsAlone(t *testing.T) {
+	now := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
+	u := &Usage{
+		FiveHour:     Window{UsedPercent: 100},
+		Weekly:       Window{UsedPercent: 100},
+		ResetCredits: &ResetCredits{Credits: []ResetCredit{{Status: "available", ID: "forever"}}},
+	}
+	if !u.ResetCredits.Credits[0].Redeemable(now) {
+		t.Fatal("a reset without an expiry must still be redeemable by hand")
+	}
+	if got, ok := u.ResetCreditToRedeem(now); ok {
+		t.Fatalf("ResetCreditToRedeem() = %+v, want nothing: a reset that never lapses is never urgent", got)
+	}
+}
+
+func TestResetCreditToRedeemOnlyCountsWindowsTheResetClears(t *testing.T) {
+	now := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
+	fiveHourOnly := ResetCredit{Status: "available", ExpiresAt: now.Add(6 * time.Hour), Clears: []string{ClearsFiveHour}}
+	weeklyHeavy := &Usage{
+		FiveHour:     Window{UsedPercent: 10},
+		Weekly:       Window{UsedPercent: 90},
+		ResetCredits: &ResetCredits{Credits: []ResetCredit{fiveHourOnly}},
+	}
+	if _, ok := weeklyHeavy.ResetCreditToRedeem(now); ok {
+		t.Fatal("a 5h-only reset was spent to reclaim weekly usage it cannot restore")
+	}
+	weeklyHeavy.FiveHour.UsedPercent = 80
+	if _, ok := weeklyHeavy.ResetCreditToRedeem(now); !ok {
+		t.Fatal("a 5h-only reset was not spent with 5h usage to reclaim")
+	}
+}
+
+func TestResetCreditExpiresBeforePutsNeverExpiringLast(t *testing.T) {
+	now := time.Now()
+	soon := ResetCredit{ExpiresAt: now.Add(time.Hour)}
+	later := ResetCredit{ExpiresAt: now.Add(2 * time.Hour)}
+	never := ResetCredit{}
+	if !soon.ExpiresBefore(later) || later.ExpiresBefore(soon) {
+		t.Fatal("dated resets must order by expiry")
+	}
+	if !later.ExpiresBefore(never) || never.ExpiresBefore(later) || never.ExpiresBefore(never) {
+		t.Fatal("a reset without an expiry must sort after every dated one")
+	}
+}
+
 func TestResetCreditToRedeemPicksSoonestExpiring(t *testing.T) {
 	now := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
 	soonest := ResetCredit{Status: "available", ExpiresAt: now.Add(2 * time.Hour)}

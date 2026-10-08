@@ -56,10 +56,10 @@ const (
 )
 
 var (
-	claudeUserAgentOnce sync.Once
-	claudeUserAgent     string
-	claudeANSIEscapeRE  = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
-	claudeNonTextRE     = regexp.MustCompile(`[^a-z0-9_]+`)
+	claudeVersionOnce  sync.Once
+	claudeVersion      string
+	claudeANSIEscapeRE = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
+	claudeNonTextRE    = regexp.MustCompile(`[^a-z0-9_]+`)
 )
 
 // ClaudeSubscriptionAccessError means Anthropic accepted the OAuth identity
@@ -80,7 +80,15 @@ func (e *ClaudeSubscriptionAccessError) Unwrap() error { return e.Err }
 // subscription limits.
 type Claude struct {
 	cfg  config.ProviderConfig
-	auth *auth.ClaudeAuth
+	auth tokenSource
+
+	redeemMu   sync.Mutex
+	lastRedeem time.Time // last automatic reset-card claim, for the cooldown
+	attempts   redeemAttempts
+
+	cardsMu     sync.Mutex
+	cards       *usage.ResetCredits // last reset cards read for auto_redeem
+	cardsReadAt time.Time           // when they were read; zero = never
 }
 
 func NewClaude(cfg config.ProviderConfig) *Claude {
@@ -107,28 +115,127 @@ type claudeWindow struct {
 type claudeUsageResp struct {
 	FiveHour claudeWindow `json:"five_hour"`
 	SevenDay claudeWindow `json:"seven_day"`
+	// Limits is the server's own list of the meters that apply, the plan-wide
+	// ones included. Claude Code renders it verbatim, classifying rows only by
+	// kind, so a new meter needs no client release.
+	Limits []claudeLimitRow `json:"limits"`
+	// Present only when the request asked for it (claudeResetCardsURL).
+	CedarEmber *claudeResetStatus `json:"cedar_ember"`
 }
 
+type claudeLimitRow struct {
+	Kind     string  `json:"kind"`
+	Percent  float64 `json:"percent"`
+	ResetsAt string  `json:"resets_at"`
+	Scope    *struct {
+		Model *struct {
+			DisplayName string `json:"display_name"`
+		} `json:"model"`
+		Surface *struct {
+			DisplayName string `json:"display_name"`
+		} `json:"surface"`
+	} `json:"scope"`
+}
+
+// claudeScopedLimits keeps the rows beyond the plan-wide session and weekly
+// windows (which five_hour and seven_day already carry) — today the per-model
+// weekly caps — labelled the way the server labels them.
+func claudeScopedLimits(rows []claudeLimitRow) []usage.ScopedLimit {
+	var out []usage.ScopedLimit
+	for _, r := range rows {
+		if r.Kind == "session" || r.Kind == "weekly_all" {
+			continue
+		}
+		label := r.Kind
+		if r.Scope != nil && r.Scope.Model != nil && r.Scope.Model.DisplayName != "" {
+			label = r.Scope.Model.DisplayName
+		} else if r.Scope != nil && r.Scope.Surface != nil && r.Scope.Surface.DisplayName != "" {
+			label = r.Scope.Surface.DisplayName
+		}
+		w := usage.Window{UsedPercent: r.Percent, ResetsAt: parseTime(r.ResetsAt)}
+		if strings.HasPrefix(r.Kind, "weekly") {
+			w.WindowSeconds = claudeWeeklySec
+		}
+		out = append(out, usage.ScopedLimit{Label: label, Window: w})
+	}
+	return out
+}
+
+// claudeBuckets collects the narrower windows the usage response reports under
+// their own keys — seven_day_opus, seven_day_sonnet and the like — by the name a
+// reset card's "clears" uses for them. Keys whose value is null (a limit the
+// plan does not have) are left out.
+func claudeBuckets(body []byte) map[string]usage.Window {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(body, &fields) != nil {
+		return nil
+	}
+	var out map[string]usage.Window
+	for name, raw := range fields {
+		if name == "five_hour" || name == "seven_day" ||
+			!(strings.HasPrefix(name, "five_hour_") || strings.HasPrefix(name, "seven_day_")) {
+			continue
+		}
+		var w *struct {
+			Utilization *float64 `json:"utilization"`
+			ResetsAt    string   `json:"resets_at"`
+		}
+		// A window carries a utilization; other objects under these prefixes
+		// (seven_day_breakdown) are not windows.
+		if json.Unmarshal(raw, &w) != nil || w == nil || w.Utilization == nil {
+			continue
+		}
+		if out == nil {
+			out = map[string]usage.Window{}
+		}
+		seconds := claudeWeeklySec
+		if strings.HasPrefix(name, "five_hour_") {
+			seconds = claudeFiveHourSec
+		}
+		out[name] = usage.Window{UsedPercent: *w.Utilization, ResetsAt: parseTime(w.ResetsAt), WindowSeconds: seconds}
+	}
+	return out
+}
+
+// setClaudeOAuthHeaders dresses a request to Anthropic's OAuth endpoints.
+func setClaudeOAuthHeaders(req *http.Request, token, userAgent string) {
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("anthropic-beta", claudeOAuthBeta)
+	req.Header.Set("User-Agent", userAgent)
+}
+
+// ReadUsage reads the windows, and nothing else, whatever the config says:
+// reading the reset cards takes a request presenting as the Claude CLI, which
+// only the commands that show or spend them (ReadUsageWithResetCredits) and
+// the loops that auto-redeem (ReadUsageForAutoRedeem) ever send.
 func (c *Claude) ReadUsage(ctx context.Context) (*usage.Usage, error) {
+	u, _, err := c.readUsage(ctx, claudeUsageURL, claudeCodeUserAgent())
+	if err != nil {
+		return nil, err
+	}
+	return u, nil
+}
+
+// readUsage makes one usage request and parses the windows, plus the reset
+// cards when the URL asked for them.
+func (c *Claude) readUsage(ctx context.Context, endpoint, userAgent string) (*usage.Usage, *claudeResetStatus, error) {
 	body, err := fetchWithAuth(ctx, c.auth, func(token string) (*http.Request, error) {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, claudeUsageURL, nil)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 		if err != nil {
 			return nil, err
 		}
-		req.Header.Set("Authorization", "Bearer "+token)
-		req.Header.Set("Accept", "application/json")
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("anthropic-beta", claudeOAuthBeta)
-		req.Header.Set("User-Agent", claudeCodeUserAgent())
+		setClaudeOAuthHeaders(req, token, userAgent)
 		return req, nil
 	})
 	if err != nil {
-		return nil, diagnoseClaudeUsageError(ctx, c.auth, err)
+		return nil, nil, diagnoseClaudeUsageError(ctx, c.auth, err)
 	}
 
 	var r claudeUsageResp
 	if err := json.Unmarshal(body, &r); err != nil {
-		return nil, fmt.Errorf("claude usage: parsing response: %w", err)
+		return nil, nil, fmt.Errorf("claude usage: parsing response: %w", err)
 	}
 
 	u := &usage.Usage{
@@ -145,9 +252,11 @@ func (c *Claude) ReadUsage(ctx context.Context) (*usage.Usage, error) {
 			ResetsAt:      parseTime(r.SevenDay.ResetsAt),
 			WindowSeconds: claudeWeeklySec,
 		},
+		ScopedLimits: claudeScopedLimits(r.Limits),
+		Buckets:      claudeBuckets(body),
 	}
 	u.LimitReached = u.FiveHour.UsedPercent >= 100 || u.Weekly.UsedPercent >= 100
-	return u, nil
+	return u, r.CedarEmber, nil
 }
 
 // diagnoseClaudeUsageError resolves the ambiguity unique to Claude's OAuth
@@ -183,12 +292,8 @@ func claudeSubscriptionAccessUnavailable(ctx context.Context, src tokenSource) b
 	if err != nil {
 		return false
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Content-Type", "application/json")
+	setClaudeOAuthHeaders(req, token, claudeCodeUserAgent())
 	req.Header.Set("anthropic-version", claudeAPIVersion)
-	req.Header.Set("anthropic-beta", claudeOAuthBeta)
-	req.Header.Set("User-Agent", claudeCodeUserAgent())
 
 	resp, err := usageHTTPClient.Do(req)
 	if err != nil {
@@ -230,8 +335,20 @@ func claudeNormalizedText(text string) string {
 }
 
 func claudeCodeUserAgent() string {
-	claudeUserAgentOnce.Do(func() {
-		claudeUserAgent = "claude-code/" + claudeFallbackVer
+	return "claude-code/" + installedClaudeVersion()
+}
+
+// claudeCLIUserAgent is the User-Agent Claude Code's interactive CLI sends. The
+// reset-card requests need it: the server decides from it which product is
+// asking, and offers reset cards only to the CLI — under any other agent they
+// read back as ineligible ("surface"). Nothing else uses it.
+func claudeCLIUserAgent() string {
+	return "claude-cli/" + installedClaudeVersion() + " (external, cli)"
+}
+
+func installedClaudeVersion() string {
+	claudeVersionOnce.Do(func() {
+		claudeVersion = claudeFallbackVer
 
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
@@ -241,10 +358,10 @@ func claudeCodeUserAgent() string {
 			return
 		}
 		if version := normalizedClaudeVersion(string(out)); version != "" {
-			claudeUserAgent = "claude-code/" + version
+			claudeVersion = version
 		}
 	})
-	return claudeUserAgent
+	return claudeVersion
 }
 
 func normalizedClaudeVersion(raw string) string {
