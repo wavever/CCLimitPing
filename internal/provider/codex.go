@@ -269,13 +269,14 @@ func creditIdempotencyKey(c usage.ResetCredit) string {
 }
 
 func codexActiveTask(_ context.Context) (string, bool, error) {
-	// Active-session detection relies entirely on the Codex CLI hooks (see
-	// `limitping hooks install`). Without them we don't guess from the process
-	// list; the scheduler just pings.
-	if !activity.Enabled("codex") {
-		return "", false, nil
+	// The CLI hooks (see `limitping hooks install`) are the primary signal.
+	// Without them, Codex's own session log says which sessions are mid-turn.
+	// Neither guesses from the process list.
+	if activity.Enabled("codex") {
+		return activity.Active("codex")
 	}
-	return activity.Active("codex")
+	desc, busy := codexBusySession(time.Now())
+	return desc, busy, nil
 }
 
 type codexWindow struct {

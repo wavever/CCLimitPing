@@ -16,15 +16,17 @@ import (
 	"github.com/wavever/CCLimitPing/internal/usage"
 )
 
-// TestMain keeps the whole package off the real ~/.config/limitping: a test
-// that forgets to fake it records its claims in a throwaway dir, never the
-// user's.
+// TestMain keeps the whole package off the real ~/.config/limitping and
+// ~/.claude.json: a test that forgets to fake them records its claims in a
+// throwaway dir, never the user's, and does not pick its ping directory from
+// whatever the user happens to trust.
 func TestMain(m *testing.M) {
 	dir, err := os.MkdirTemp("", "limitping-provider-test-")
 	if err != nil {
 		panic(err)
 	}
 	os.Setenv("XDG_CONFIG_HOME", dir)
+	os.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(dir, "claude"))
 	code := m.Run()
 	os.RemoveAll(dir)
 	os.Exit(code)

@@ -403,16 +403,23 @@ func (c *Claude) Trigger(ctx context.Context, dryRun bool) (*TriggerResult, erro
 	// swallows the prompt as one more value; it would then never be sent.
 	args = append(args, "--", prompt)
 
+	// Only a ping whose transcript will be deleted may borrow a directory.
+	dir, borrowed := claudePingDir(sessionID != "")
+
 	// An unset model leaves Model empty: Claude Code resolves its own default
 	// from settings precedence limitping does not reproduce, and guessing would
 	// be worse than saying nothing.
 	res := &TriggerResult{Command: "claude " + shellJoin(args), Model: c.cfg.Model}
+	if borrowed {
+		res.Command = "cd " + shellJoin([]string{dir}) + " && " + res.Command
+	}
 	if dryRun {
 		return res, nil
 	}
 
 	cmd := exec.CommandContext(ctx, "claude", args...)
-	cmd.Env = append(os.Environ(), claudePingEnv)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), claudePingEnv...)
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
 		return res, fmt.Errorf("claude interactive failed to start: %w", err)

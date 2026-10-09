@@ -104,6 +104,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 func (s *Scheduler) runTarget(ctx context.Context, t Target) {
 	name := t.Provider.Name()
 	backoff := minBackoff
+	var retry pingRetry
 	aligned := t.AlignStart.IsZero() // whether the align gate has been passed
 	var lastPingAt time.Time
 	pingConfirms := 0 // re-reads spent waiting for the last ping's window to show up
@@ -181,6 +182,8 @@ func (s *Scheduler) runTarget(ctx context.Context, t Target) {
 
 		// If the 5h window is still running, wait until it resets, then ping.
 		if u.FiveHour.Active() {
+			// Started, whoever started it: the next free window starts afresh.
+			retry = pingRetry{}
 			wait := u.FiveHour.Remaining() + s.cfg.ResetBuffer.Duration
 			s.log.Printf("[%s] 5h window active (%.0f%%), next ping at %s (in %s)",
 				name, u.FiveHour.UsedPercent,
@@ -255,11 +258,11 @@ func (s *Scheduler) runTarget(ctx context.Context, t Target) {
 		tcancel()
 		if s.dryRun {
 			if err != nil {
-				s.log.Printf("[%s] dry-run ping failed: %v (retry in %s)", name, err, backoff)
-				if !sleepCtx(ctx, backoff) {
+				wait, _ := retry.fail()
+				s.log.Printf("[%s] dry-run ping failed: %v (retry in %s)", name, err, wait)
+				if !sleepCtx(ctx, wait) {
 					return
 				}
-				backoff = nextBackoff(backoff)
 				continue
 			}
 			s.log.Printf("[%s] DRY-RUN would ping now: %s%s", name, res.Command, triggerModel(res))
@@ -276,15 +279,18 @@ func (s *Scheduler) runTarget(ctx context.Context, t Target) {
 			continue
 		}
 		if err != nil {
-			s.log.Printf("[%s] ping failed: %v (retry in %s)", name, err, backoff)
-			s.live.set(name, "ping failed — retrying", time.Now().Add(backoff))
-			s.notify(name+": ping failed", err.Error())
-			if !sleepCtx(ctx, backoff) {
+			wait, first := retry.fail()
+			s.log.Printf("[%s] ping failed: %v (retry in %s)", name, err, wait)
+			s.live.set(name, "ping failed — retrying", time.Now().Add(wait))
+			if first {
+				s.notify(name+": ping failed", err.Error())
+			}
+			if !sleepCtx(ctx, wait) {
 				return
 			}
-			backoff = nextBackoff(backoff)
 			continue
 		}
+		retry = pingRetry{}
 		lastPingAt, pingConfirms = time.Now(), 0
 		s.log.Printf("[%s] ping sent, new window started%s%s", name, triggerModel(res), triggerCost(res))
 		s.live.set(name, "ping sent — checking window soon", lastPingAt.Add(postPingGrace))
@@ -391,6 +397,29 @@ func windowLen(w usage.Window) time.Duration {
 		return time.Duration(w.WindowSeconds) * time.Second
 	}
 	return defaultWindow
+}
+
+// pingRetry paces the retries of a ping that keeps failing. It is kept apart
+// from the usage-read backoff because every retry begins with a usage read
+// that succeeds and resets that one, which held a ping that could not succeed
+// — one waiting on the user, say — to a retry and a notification every 30
+// seconds. The zero value is a ping that has not failed.
+type pingRetry struct {
+	next     time.Duration
+	failures int
+}
+
+// fail records a failed ping and returns how long to wait before the next
+// attempt, and whether this failure opens a run of them — the one worth a
+// notification; the retries after it are in the log.
+func (r *pingRetry) fail() (wait time.Duration, first bool) {
+	if r.next == 0 {
+		r.next = minBackoff
+	}
+	wait, first = r.next, r.failures == 0
+	r.failures++
+	r.next = nextBackoff(r.next)
+	return wait, first
 }
 
 func nextBackoff(d time.Duration) time.Duration {

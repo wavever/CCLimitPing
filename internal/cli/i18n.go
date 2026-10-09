@@ -523,7 +523,7 @@ Examples:
 	hooksShort: "Manage Claude/Codex hooks for accurate active-session detection",
 	hooksLong: `Manage the hooks that let limitping tell whether a Claude Code or Codex session is actually mid-turn (rather than merely running).
 
-When installed, limitping defers its ping while you're actively working and resumes once the turn ends. Without them, Claude Code's own session list ('claude agents') answers the same question for Claude; for Codex limitping skips the check and pings as soon as the window resets. The install script sets these hooks up automatically; 'limitping hooks status' checks they are still installed, current and — for Codex — trusted.`,
+When installed, limitping defers its ping while you're actively working and resumes once the turn ends. Without them, Claude Code's own session list ('claude agents') answers the same question for Claude, and Codex's own session log (~/.codex/sessions) answers it for Codex. The install script sets these hooks up automatically; 'limitping hooks status' checks they are still installed, current and — for Codex — trusted.`,
 	hooksInstallShort: "Register limitping's hooks in the Claude/Codex configs",
 	hooksInstallLong: `Register limitping's hooks in ~/.claude/settings.json and ~/.codex/hooks.json (existing settings are preserved; a .bak backup is written).
 
@@ -855,7 +855,7 @@ var zhText = cliText{
 	hooksShort: "管理 Claude/Codex 钩子，精确判断会话是否正在运行",
 	hooksLong: `管理用于判断 Claude Code 或 Codex 会话是否真正处于对话进行中（而非仅仅进程存在）的钩子。
 
-安装后，limitping 会在你正在使用时推迟 ping，并在一轮对话结束后恢复。未安装钩子时，Claude 改用 Claude Code 自己的会话列表（'claude agents'）判断；Codex 则跳过该检查，窗口一重置就直接 ping。安装脚本会自动装好这些钩子；'limitping hooks status' 可检查它们是否仍在、是否最新，以及（Codex）是否已信任。`,
+安装后，limitping 会在你正在使用时推迟 ping，并在一轮对话结束后恢复。未安装钩子时，Claude 改用 Claude Code 自己的会话列表（'claude agents'）判断，Codex 改用它自己的会话日志（~/.codex/sessions）判断。安装脚本会自动装好这些钩子；'limitping hooks status' 可检查它们是否仍在、是否最新，以及（Codex）是否已信任。`,
 	hooksInstallShort: "在 Claude/Codex 配置中注册 limitping 的钩子",
 	hooksInstallLong: `在 ~/.claude/settings.json 和 ~/.codex/hooks.json 中注册 limitping 的钩子（保留已有配置，并写入 .bak 备份）。
 

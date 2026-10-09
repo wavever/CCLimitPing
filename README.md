@@ -96,8 +96,9 @@ instead of sending its own ping, because that session's next model request will
 start the new window naturally. This check relies on the
 [CLI hooks](#active-session-detection-hooks) (installed automatically by the
 install script). Without them, Claude Code's own session list
-(`claude agents --json`) answers for Claude; for Codex `limitping` skips the
-check and pings as soon as the window resets.
+(`claude agents --json`) answers for Claude, and Codex's own session log
+(a rollout under `~/.codex/sessions` whose last turn is still open) answers
+for Codex.
 
 - **Claude**: reads `GET https://api.anthropic.com/api/oauth/usage` using the
   OAuth token from the macOS Keychain (`Claude Code-credentials`) or
@@ -109,8 +110,13 @@ check and pings as soon as the window resets.
   runs under its own `--session-id` and its transcript is deleted afterwards
   (pings used to pile up as "." conversations in `claude --resume`), with your
   hooks off (`disableAllHooks`), no MCP servers (`--strict-mcp-config`), no
-  tools (`--tools ""`) and no CLAUDE.md — each flag only when the installed
-  Claude Code supports it. If the usage endpoint returns an ambiguous 429, limitping
+  tools (`--tools ""`), no CLAUDE.md and nothing added to your prompt history
+  — each flag only when the installed Claude Code supports it. The ping runs in
+  the directory `watch` was started from when Claude Code trusts it; otherwise
+  (the home directory, say, whose trust Claude Code does not keep) it borrows a
+  directory Claude Code does trust and that has no project settings, so its
+  workspace-trust prompt never blocks it — and only when the transcript can be
+  deleted, so nothing is left behind there. If the usage endpoint returns an ambiguous 429, limitping
   uses the free token-counting endpoint (which does not create a Message) to
   distinguish a real endpoint throttle from Claude Code subscription access
   being disabled.
@@ -494,8 +500,10 @@ At a window reset, `watch` avoids pinging while you're actively working — that
 turn would start the next window on its own. This relies on **CLI hooks**, which
 the install script sets up for you. If they aren't installed, Claude falls back
 to Claude Code's own session list (`claude agents --json`, which marks a session
-`busy` mid-turn); Codex skips the check entirely and pings right at reset.
-`limitping` never guesses from the process list.
+`busy` mid-turn), and Codex to its own session log: a rollout under
+`~/.codex/sessions` written in the last 10 minutes whose last `task_started` has
+no `task_complete` or `turn_aborted` after it. `limitping` never guesses from
+the process list.
 
 The install script runs this automatically; to (re)install manually:
 

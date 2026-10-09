@@ -451,6 +451,32 @@ func TestRunTargetBacksOffOnTriggerFailure(t *testing.T) {
 	}
 }
 
+// A ping that keeps failing must slow down and notify once, even though the
+// usage read before each attempt succeeds.
+func TestPingRetryBacksOffAndNotifiesOnce(t *testing.T) {
+	var r pingRetry
+	var waits []time.Duration
+	var firsts []bool
+	for range 6 {
+		wait, first := r.fail()
+		waits = append(waits, wait)
+		firsts = append(firsts, first)
+	}
+	want := []time.Duration{30 * time.Second, time.Minute, 2 * time.Minute, 4 * time.Minute, 8 * time.Minute, maxBackoff}
+	for i := range want {
+		if waits[i] != want[i] {
+			t.Fatalf("waits = %v, want %v", waits, want)
+		}
+		if firsts[i] != (i == 0) {
+			t.Fatalf("first = %v, want only the first failure to notify", firsts)
+		}
+	}
+	r = pingRetry{}
+	if wait, first := r.fail(); wait != minBackoff || !first {
+		t.Fatalf("after a reset: wait %s first %v, want a fresh run", wait, first)
+	}
+}
+
 func TestNextBackoff(t *testing.T) {
 	if got := nextBackoff(minBackoff); got != time.Minute {
 		t.Fatalf("nextBackoff(30s) = %v, want 1m", got)
