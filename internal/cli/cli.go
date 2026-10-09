@@ -139,6 +139,13 @@ func newRootCmd() *cobra.Command {
 		Long:          text.rootLong,
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		// Runs ahead of every subcommand; no subcommand defines its own
+		// PersistentPreRun, which would shadow this one.
+		PersistentPreRun: func(cmd *cobra.Command, _ []string) {
+			if !skipsUpdateNotice(cmd) {
+				updateNotice(cmd.Context(), cmd.OutOrStdout(), text, os.Stdin)
+			}
+		},
 	}
 	if text.usageTemplate != "" {
 		root.SetUsageTemplate(text.usageTemplate)

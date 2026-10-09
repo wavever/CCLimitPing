@@ -46,7 +46,6 @@ func newContinueCmd() *cobra.Command {
 		Args:      cobra.MinimumNArgs(1),
 		ValidArgs: []string{"claude", "codex"},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			updateNotice(cmd.Context(), cmd.OutOrStdout(), text, os.Stdin)
 			providerName := args[0]
 			if providerName != "claude" && providerName != "codex" {
 				return fmt.Errorf("%s %q", text.continueBadProvider, providerName)

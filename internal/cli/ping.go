@@ -25,7 +25,6 @@ func newPingCmd() *cobra.Command {
 		Args:      cobra.MatchAll(cobra.MaximumNArgs(1), cobra.OnlyValidArgs),
 		ValidArgs: []string{"claude", "codex", "all"},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			updateNotice(cmd.Context(), cmd.OutOrStdout(), text, os.Stdin)
 			name := "all"
 			if len(args) > 0 {
 				name = args[0]

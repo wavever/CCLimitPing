@@ -90,7 +90,6 @@ func newBackgroundCmd() *cobra.Command {
 		Args:    cobra.NoArgs,
 		// Bare `limitping bg` reports status — the common "is it running?" check.
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			updateNotice(cmd.Context(), cmd.OutOrStdout(), text, os.Stdin)
 			return runBgStatus(cmd.Context(), cmd.OutOrStdout())
 		},
 	}
@@ -122,7 +121,6 @@ func newBgStatusCmd() *cobra.Command {
 		Short: text.bgStatusShort,
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			updateNotice(cmd.Context(), cmd.OutOrStdout(), text, os.Stdin)
 			return runBgStatus(cmd.Context(), cmd.OutOrStdout())
 		},
 	}

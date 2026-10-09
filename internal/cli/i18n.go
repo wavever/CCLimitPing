@@ -210,6 +210,7 @@ type cliText struct {
 	updateChooseHint        string // keys that drive the option menu
 	updateDismissedFmt      string // version
 	updateFailedFmt         string // error
+	updateRerunFmt          string // new version, command line to run again
 
 	upgradeShort      string
 	upgradeCurrentFmt string // current version
@@ -568,6 +569,7 @@ Examples:
 	updateChooseHint:        "\u2191/\u2193 move \u00b7 Enter confirm \u00b7 Esc skip",
 	updateDismissedFmt:      "   Skipping %s; you'll hear about the next release.\n",
 	updateFailedFmt:         "   %v\n",
+	updateRerunFmt:          "   Updated to %s. Run `%s` again to use it.\n",
 	upgradeShort:            "Upgrade limitping to the latest release",
 	upgradeCurrentFmt:       "limitping %s is already the latest release.\n",
 	upgradeForceFlag:        "reinstall even when already on the latest release",
@@ -899,6 +901,7 @@ Claude Code 会自动加载钩子；Codex 需要一次性信任：在 Codex 中�
 	updateChooseHint:        "\u2191/\u2193 移动 \u00b7 Enter 确认 \u00b7 Esc 跳过",
 	updateDismissedFmt:      "   已跳过 %s，下个版本会再提醒。\n",
 	updateFailedFmt:         "   %v\n",
+	updateRerunFmt:          "   已更新到 %s，请重新执行 `%s`。\n",
 	upgradeShort:            "将 limitping 更新到最新版本",
 	upgradeCurrentFmt:       "limitping %s 已是最新版本。\n",
 	upgradeForceFlag:        "即使已是最新版本也强制重装",

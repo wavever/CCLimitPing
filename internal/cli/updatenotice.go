@@ -7,19 +7,43 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
+	"syscall"
 
+	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
 	"github.com/wavever/CCLimitPing/internal/update"
 )
 
 // The update notice runs before a command's own output, the way the Codex CLI
-// does it, so a new release is seen rather than scrolled past. It is offered
-// only on an interactive terminal and only from commands a person is watching:
-// `hook` must stay fast and silent, `watch`/`bg start` may have no terminal at
-// all, and `--json` output has to stay machine-readable.
+// does it, so a new release is seen rather than scrolled past. The root command
+// offers it ahead of every subcommand, but only on an interactive terminal — a
+// backgrounded `watch` or a piped invocation has none — and never from the
+// commands skipsUpdateNotice rules out.
 
 var updateHTTPClient = http.DefaultClient
+
+// skipsUpdateNotice reports whether cmd must run without the notice ahead of
+// it: `hook` is fired by the provider CLIs and has to stay fast and silent,
+// `upgrade` already is the answer to the notice, `uninstall` makes it moot,
+// help and shell completion are not where a release belongs, and `--json`
+// output has to stay machine-readable.
+func skipsUpdateNotice(cmd *cobra.Command) bool {
+	if f := cmd.Flags().Lookup("json"); f != nil && f.Changed {
+		return true
+	}
+	top := cmd
+	for top.HasParent() && top.Parent().HasParent() {
+		top = top.Parent()
+	}
+	switch top.Name() {
+	case "hook", "upgrade", "uninstall", "help", "completion",
+		cobra.ShellCompRequestCmd, cobra.ShellCompNoDescRequestCmd:
+		return true
+	}
+	return false
+}
 
 // updateNotice asks about a newer release, if there is one. Every failure path
 // is silent: a version check must never get in the way of the command the user
@@ -33,7 +57,31 @@ func updateNotice(ctx context.Context, out io.Writer, text cliText, in *os.File)
 	if next == "" {
 		return
 	}
-	promptUpdate(out, text, in, next)
+	if promptUpdate(out, text, in, next) {
+		rerunUpgraded(out, text, next)
+	}
+}
+
+// Swapped out by tests: a real exec replaces the test binary, and a real exit
+// ends the test run.
+var (
+	execBinary  = syscall.Exec
+	exitProcess = os.Exit
+)
+
+// rerunUpgraded hands the command the user ran to the binary that was just
+// installed. This process is still the old code in memory, so carrying on here
+// would answer the command with the release the user just chose to leave. The
+// exec keeps os.Args[0], so the new process still sees the name it was invoked
+// by. Where exec is unavailable (Windows) or fails, the command is not run at
+// all: the user is told to run it again instead.
+func rerunUpgraded(out io.Writer, text cliText, next string) {
+	if exe, err := currentExecutable(); err == nil {
+		_ = execBinary(exe, os.Args, os.Environ()) // returns only on failure
+	}
+	rerun := strings.Join(append([]string{invokedName()}, os.Args[1:]...), " ")
+	fmt.Fprintf(out, text.updateRerunFmt, next, rerun)
+	exitProcess(0)
 }
 
 // updateChoice is what the notice's menu resolves to.
@@ -45,8 +93,10 @@ const (
 	updateChoiceDismiss
 )
 
-// promptUpdate renders the notice and applies the choice.
-func promptUpdate(out io.Writer, text cliText, in io.Reader, next string) {
+// promptUpdate renders the notice and applies the choice. It reports whether a
+// new binary was installed; a failed upgrade leaves the running one in place,
+// so the command can still go ahead on it.
+func promptUpdate(out io.Writer, text cliText, in io.Reader, next string) (upgraded bool) {
 	fmt.Fprintf(out, text.updateAvailableFmt, update.Normalize(version()), next)
 	fmt.Fprintf(out, text.updateNotesFmt, update.ReleaseNotesURL)
 
@@ -55,6 +105,8 @@ func promptUpdate(out io.Writer, text cliText, in io.Reader, next string) {
 		fmt.Fprintln(out)
 		if err := runUpgrade(context.Background(), out, out); err != nil {
 			fmt.Fprintf(out, text.updateFailedFmt, err)
+		} else {
+			upgraded = true
 		}
 	case updateChoiceDismiss:
 		if err := update.Dismiss(next); err != nil {
@@ -64,6 +116,7 @@ func promptUpdate(out io.Writer, text cliText, in io.Reader, next string) {
 		}
 	}
 	fmt.Fprintln(out)
+	return upgraded
 }
 
 // selectUpdateOption runs the arrow-key menu and returns the chosen option. The

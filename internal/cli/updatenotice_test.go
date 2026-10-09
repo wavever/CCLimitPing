@@ -2,8 +2,12 @@ package cli
 
 import (
 	"bytes"
+	"errors"
+	"os"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
 
 	"github.com/wavever/CCLimitPing/internal/update"
 )
@@ -122,6 +126,86 @@ func TestPromptUpdateIsLocalized(t *testing.T) {
 
 	if got := out.String(); !strings.Contains(got, "有新版本") || !strings.Contains(got, "3. 跳过此版本") {
 		t.Fatalf("prompt is not localized:\n%s", got)
+	}
+}
+
+// After an upgrade the old binary must not go on to run the command: it is
+// handed to the new binary, and where that cannot happen the run ends with a
+// request to run it again.
+func TestRerunUpgradedNeverContinuesOnTheOldBinary(t *testing.T) {
+	setLocale(t, "C")
+	exe, err := currentExecutable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var execPath string
+	var execArgs []string
+	exitCode := -1
+	origExec, origExit, origArgs := execBinary, exitProcess, os.Args
+	t.Cleanup(func() { execBinary, exitProcess, os.Args = origExec, origExit, origArgs })
+	os.Args = []string{"/usr/local/bin/lmp", "status", "-v"}
+	exitProcess = func(code int) { exitCode = code }
+
+	// exec succeeding never returns, so the fake only records what it was
+	// given; the fallback below is what runs when it does return.
+	execBinary = func(path string, argv, _ []string) error {
+		execPath, execArgs = path, argv
+		return errors.New("exec unavailable")
+	}
+	var out bytes.Buffer
+	rerunUpgraded(&out, localizedText(), "0.10.0")
+
+	if execPath != exe {
+		t.Fatalf("exec path = %q, want the installed binary %q", execPath, exe)
+	}
+	if strings.Join(execArgs, " ") != "/usr/local/bin/lmp status -v" {
+		t.Fatalf("exec argv = %q, want the original invocation", execArgs)
+	}
+	if exitCode != 0 {
+		t.Fatalf("exit code = %d, want the run to end after a failed exec", exitCode)
+	}
+	if got := out.String(); !strings.Contains(got, "0.10.0") || !strings.Contains(got, "`lmp status -v`") {
+		t.Fatalf("fallback does not ask to rerun the command:\n%s", got)
+	}
+}
+
+// The root offers the notice ahead of every command a person runs, except the
+// ones it would get in the way of.
+func TestSkipsUpdateNotice(t *testing.T) {
+	cases := []struct {
+		args []string
+		want bool
+	}{
+		{[]string{"status"}, false},
+		{[]string{"ping", "claude"}, false},
+		{[]string{"watch"}, false},
+		{[]string{"bg", "start"}, false},
+		{[]string{"config", "show"}, false},
+		{[]string{"hooks", "install"}, false},
+		{[]string{"version"}, false},
+		{[]string{"status", "--json"}, true},
+		{[]string{"hook", "claude", "stop"}, true},
+		{[]string{"upgrade"}, true},
+		{[]string{"uninstall"}, true},
+		{[]string{"help", "status"}, true},
+		{[]string{"completion", "zsh"}, true},
+		{[]string{"__complete", "st"}, true},
+	}
+	for _, c := range cases {
+		root := newRootCmd()
+		// Execute() attaches these; Find alone does not.
+		root.InitDefaultHelpCmd()
+		root.AddCommand(&cobra.Command{Use: cobra.ShellCompRequestCmd})
+		cmd, rest, err := root.Find(c.args)
+		if err != nil {
+			t.Fatalf("%v: %v", c.args, err)
+		}
+		if err := cmd.ParseFlags(rest); err != nil {
+			t.Fatalf("%v: %v", c.args, err)
+		}
+		if got := skipsUpdateNotice(cmd); got != c.want {
+			t.Errorf("skipsUpdateNotice(%v) = %v, want %v", c.args, got, c.want)
+		}
 	}
 }
 
