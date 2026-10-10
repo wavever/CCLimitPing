@@ -113,7 +113,7 @@ func runPing(parent context.Context, out io.Writer, text cliText, p provider.Pro
 	for {
 		select {
 		case o := <-done:
-			fmt.Fprint(out, "\r\033[K") // clear the spinner line
+			fmt.Fprint(out, eraseLine) // clear the spinner line
 			report(out, text, name, start, o.res, o.err)
 			return o.err
 		case <-ticker.C:

@@ -27,7 +27,7 @@ type cliText struct {
 	statusLong        string
 	statusVerboseFlag string
 	statusJSONFlag    string
-	statusFetchingFmt string
+	statusFetchingFmt string // provider; a transient line, erased once read
 
 	// Text-mode usage rendering (status, bg status). The en values must stay
 	// byte-identical to the historical hardcoded output.
@@ -304,7 +304,7 @@ Use "{{.CommandPath}} [command] --help" for more information about a command.{{e
 The 'today', 'week' and 'month' lines total the tokens this machine's Claude Code / Codex sessions have used since local midnight, since Monday and since the 1st of the month, read from the transcripts those CLIs write to disk, and price them at published API rates — what that use would have cost without the subscription. Work done from another machine or from the web app is not in those logs. Add -v for the per-model breakdown.`,
 	statusVerboseFlag: "print the raw JSON response",
 	statusJSONFlag:    "output usage as JSON instead of text",
-	statusFetchingFmt: "Fetching %s usage...\n",
+	statusFetchingFmt: "Fetching %s usage...",
 
 	statusErrorFmt:                   "%-7s  error: %v\n",
 	statusFiveHourLineFmt:            "  5h     %s\n",
@@ -637,7 +637,7 @@ var zhText = cliText{
 "今日"、"本周"、"本月" 三行分别统计本机 Claude Code / Codex 会话从本地零点、本周一、本月 1 日起消耗的 token，数据来自这些 CLI 写在磁盘上的会话记录，并按官方 API 价格折算——也就是不用订阅时这些用量要花多少钱。其他机器或网页版的用量不在这些记录里。加 -v 可查看分模型明细。`,
 	statusVerboseFlag: "打印原始 JSON 响应",
 	statusJSONFlag:    "以 JSON 格式输出用量，而非文本",
-	statusFetchingFmt: "正在查询 %s 用量...\n",
+	statusFetchingFmt: "正在查询 %s 用量...",
 
 	statusErrorFmt:                   "%-7s  错误: %v\n",
 	statusSubAccessError:             "Claude 订阅访问不可用（可能是会员已到期/续费失败，或组织管理员禁用了 Claude Code）；请恢复订阅，或在 Claude Code 中改用 Anthropic API Key",

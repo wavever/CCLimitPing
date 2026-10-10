@@ -38,7 +38,7 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-func TestRunStatusPrintsProgressBeforeReadUsage(t *testing.T) {
+func TestRunStatusShowsProgressOnlyWhileReading(t *testing.T) {
 	var out bytes.Buffer
 	var progress bytes.Buffer
 
@@ -46,8 +46,8 @@ func TestRunStatusPrintsProgressBeforeReadUsage(t *testing.T) {
 		name:  "codex",
 		usage: &usage.Usage{Provider: "codex"},
 		onRead: func() {
-			if !strings.Contains(progress.String(), "Fetching codex usage...\n") {
-				t.Fatalf("progress output before ReadUsage = %q, want fetching message", progress.String())
+			if progress.String() != "Fetching codex usage..." {
+				t.Fatalf("progress output during ReadUsage = %q, want the fetching message", progress.String())
 			}
 		},
 	}
@@ -55,8 +55,28 @@ func TestRunStatusPrintsProgressBeforeReadUsage(t *testing.T) {
 	if err := runStatus(context.Background(), &out, &progress, enText, []provider.Provider{p}, false, false, "used", true); err != nil {
 		t.Fatalf("runStatus() error = %v", err)
 	}
+	// Once the usage is in, the line is erased so the result takes its place.
+	if got := progress.String(); got != "Fetching codex usage..."+eraseLine {
+		t.Fatalf("progress output = %q, want the fetching message erased", got)
+	}
 	if !strings.Contains(out.String(), "codex\n") {
 		t.Fatalf("status output = %q, want provider usage", out.String())
+	}
+}
+
+func TestTransientProgressStaysOffOutsideATerminal(t *testing.T) {
+	var buf bytes.Buffer
+	if transientProgress(&buf) != io.Discard {
+		t.Fatal("transientProgress(buffer) kept the writer, want progress discarded")
+	}
+	f, err := os.CreateTemp(t.TempDir(), "stderr")
+	if err != nil {
+		t.Fatalf("CreateTemp() error = %v", err)
+	}
+	defer f.Close()
+	// Redirected to a file, nothing would erase the line.
+	if transientProgress(f) != io.Discard {
+		t.Fatal("transientProgress(file) kept the writer, want progress discarded")
 	}
 }
 

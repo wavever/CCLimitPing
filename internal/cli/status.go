@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"os"
 	"strings"
 	"time"
 
@@ -42,7 +43,7 @@ func newStatusCmd() *cobra.Command {
 			if len(providers) == 0 {
 				return fmt.Errorf("no providers enabled in config")
 			}
-			return runStatus(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), text, providers, verbose, jsonOut, cfg.UsageDisplay, true)
+			return runStatus(cmd.Context(), cmd.OutOrStdout(), transientProgress(cmd.ErrOrStderr()), text, providers, verbose, jsonOut, cfg.UsageDisplay, true)
 		},
 	}
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, text.statusVerboseFlag)
@@ -80,6 +81,10 @@ func runStatus(ctx context.Context, out, progress io.Writer, text cliText, provi
 		u, err := read(readCtx)
 		cancel()
 		sum := <-spendCh
+		// The progress line only stands in for the block that answers it.
+		if text.statusFetchingFmt != "" {
+			fmt.Fprint(progress, eraseLine)
+		}
 		if err != nil {
 			failed++
 			if jsonOut {
@@ -109,6 +114,19 @@ func runStatus(ctx context.Context, out, progress io.Writer, text cliText, provi
 		return fmt.Errorf("status failed for %d provider(s)", failed)
 	}
 	return nil
+}
+
+// eraseLine returns the cursor to the start of the line and clears it.
+const eraseLine = "\r\033[K"
+
+// transientProgress returns w for progress lines that are erased once done, or
+// io.Discard when w is not a terminal: piped or redirected, nothing would
+// erase the line, and it would be left behind as noise in the output.
+func transientProgress(w io.Writer) io.Writer {
+	if f, ok := w.(*os.File); ok && isTerminal(f) && os.Getenv("TERM") != "dumb" {
+		return w
+	}
+	return io.Discard
 }
 
 func localizedProviderError(text cliText, err error) string {
