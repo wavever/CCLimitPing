@@ -73,6 +73,8 @@ type cliText struct {
 
 	// Today's local token consumption (status, bg status).
 	statusTodayLineFmt      string // rendered token/cost summary
+	statusWeekSpendLineFmt  string // rendered token/cost summary, since Monday
+	statusMonthSpendLineFmt string // rendered token/cost summary, since the 1st
 	statusTodayTokensFmt    string // token count
 	statusTodayCostFmt      string // cost, appended to the token count
 	statusTodayBreakdownFmt string // input, cache read, cache write, output (-v)
@@ -299,7 +301,7 @@ Use "{{.CommandPath}} [command] --help" for more information about a command.{{e
 	statusShort: "Show current 5h/weekly usage and reset countdowns without using quota",
 	statusLong: `Show current 5h and weekly usage for every enabled provider. This command only reads usage data from zero-quota endpoints; it does not send a ping or consume model quota.
 
-The 'today' line totals the tokens this machine's Claude Code / Codex sessions have used since local midnight, read from the transcripts those CLIs write to disk, and prices them at published API rates — what the day would have cost without the subscription. Work done from another machine or from the web app is not in those logs. Add -v for the per-model breakdown.`,
+The 'today', 'week' and 'month' lines total the tokens this machine's Claude Code / Codex sessions have used since local midnight, since Monday and since the 1st of the month, read from the transcripts those CLIs write to disk, and price them at published API rates — what that use would have cost without the subscription. Work done from another machine or from the web app is not in those logs. Add -v for the per-model breakdown.`,
 	statusVerboseFlag: "print the raw JSON response",
 	statusJSONFlag:    "output usage as JSON instead of text",
 	statusFetchingFmt: "Fetching %s usage...\n",
@@ -341,7 +343,9 @@ The 'today' line totals the tokens this machine's Claude Code / Codex sessions h
 	statusNowWord:                    "now",
 
 	statusTodayLineFmt:      "  today  %s\n",
-	statusTodayTokensFmt:    "%s tok",
+	statusWeekSpendLineFmt:  "  week   %s\n",
+	statusMonthSpendLineFmt: "  month  %s\n",
+	statusTodayTokensFmt:    "%s tokens",
 	statusTodayCostFmt:      "  ≈ $%s",
 	statusTodayBreakdownFmt: "         in %s · cache %s read / %s write · out %s\n",
 	statusTodayModelFmt:     "         %-26s %s\n",
@@ -630,7 +634,7 @@ var zhText = cliText{
 	statusShort: "查看当前 5h/周用量和重置倒计时，不消耗额度",
 	statusLong: `查看所有已启用 Provider 的当前 5h 和周用量。此命令只通过零消耗接口读取用量，不会发送 ping，也不会消耗模型额度。
 
-"今日" 一行统计本机 Claude Code / Codex 会话从本地零点起消耗的 token，数据来自这些 CLI 写在磁盘上的会话记录，并按官方 API 价格折算——也就是不用订阅时这一天要花多少钱。其他机器或网页版的用量不在这些记录里。加 -v 可查看分模型明细。`,
+"今日"、"本周"、"本月" 三行分别统计本机 Claude Code / Codex 会话从本地零点、本周一、本月 1 日起消耗的 token，数据来自这些 CLI 写在磁盘上的会话记录，并按官方 API 价格折算——也就是不用订阅时这些用量要花多少钱。其他机器或网页版的用量不在这些记录里。加 -v 可查看分模型明细。`,
 	statusVerboseFlag: "打印原始 JSON 响应",
 	statusJSONFlag:    "以 JSON 格式输出用量，而非文本",
 	statusFetchingFmt: "正在查询 %s 用量...\n",
@@ -674,7 +678,9 @@ var zhText = cliText{
 	statusWeekdays:                   [7]string{"周日", "周一", "周二", "周三", "周四", "周五", "周六"},
 
 	statusTodayLineFmt:      "  今日   %s\n",
-	statusTodayTokensFmt:    "%s tok",
+	statusWeekSpendLineFmt:  "  本周   %s\n",
+	statusMonthSpendLineFmt: "  本月   %s\n",
+	statusTodayTokensFmt:    "%s token",
 	statusTodayCostFmt:      "  ≈ $%s",
 	statusTodayBreakdownFmt: "         输入 %s · 缓存 读 %s / 写 %s · 输出 %s\n",
 	statusTodayModelFmt:     "         %-26s %s\n",

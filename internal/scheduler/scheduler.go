@@ -353,7 +353,7 @@ func (s *Scheduler) notify(title, msg string) {
 }
 
 // triggerCost renders the token/cost tail for logs, e.g.
-// " — 32934 tok (in 32792 / out 142), $0.0110".
+// " — 32934 tokens (in 32792 / out 142), $0.0110".
 // triggerModel names the model a ping used. The watch log is the only record an
 // unattended run leaves behind, and the command line names the model only when
 // limitping passed one explicitly.
@@ -368,7 +368,7 @@ func triggerCost(res *provider.TriggerResult) string {
 	if res == nil || !res.HasUsage {
 		return ""
 	}
-	s := fmt.Sprintf(" — %d tok (in %d / out %d)", res.TotalTokens, res.InputTokens, res.OutputTokens)
+	s := fmt.Sprintf(" — %d tokens (in %d / out %d)", res.TotalTokens, res.InputTokens, res.OutputTokens)
 	if res.CostUSD > 0 {
 		s += fmt.Sprintf(", $%.4f", res.CostUSD)
 	}

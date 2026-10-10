@@ -34,7 +34,7 @@ func TestReadClaudeCountsOneEntryPerRequest(t *testing.T) {
 	t.Setenv("CLAUDE_CONFIG_DIR", dir)
 
 	start := startOfDay(now)
-	byModel, available, err := readClaude(start, start.AddDate(0, 0, 1))
+	byModel, available, err := readDay(readClaude, start)
 	if err != nil {
 		t.Fatalf("readClaude() error = %v", err)
 	}
@@ -53,6 +53,46 @@ func TestReadClaudeCountsOneEntryPerRequest(t *testing.T) {
 	}
 }
 
+func TestReadClaudeKeepsTheFinalLineOfAStreamedReply(t *testing.T) {
+	now := time.Now()
+	dir := writeClaudeTranscript(t, "project-a", "session.jsonl", []string{
+		// The first line of a streamed reply is written before the reply is
+		// done, so its output count is a fraction of the final one.
+		claudeLine(now, "msg_1", "req_1", "claude-opus-5", 10, 100, 1000, 6),
+		claudeLine(now, "msg_1", "req_1", "claude-opus-5", 10, 100, 1000, 275),
+	})
+	// A subagent's sidechain can repeat the request with a stale count.
+	writeClaudeTranscriptIn(t, dir, "project-a", "agent-a1.jsonl", []string{
+		claudeLine(now, "msg_1", "req_1", "claude-opus-5", 10, 100, 1000, 6),
+	})
+	t.Setenv("CLAUDE_CONFIG_DIR", dir)
+
+	byModel, _, err := readDay(readClaude, startOfDay(now))
+	if err != nil {
+		t.Fatalf("readClaude() error = %v", err)
+	}
+	if got := byModel["claude-opus-5"]; got.Output != 275 || got.Input != 10 || got.CacheRead != 1000 {
+		t.Fatalf("tokens = %+v, want the request once, with its final output", got)
+	}
+}
+
+func TestReadClaudeSeparatesOneHourCacheWrites(t *testing.T) {
+	now := time.Now()
+	line := fmt.Sprintf(`{"type":"assistant","timestamp":%q,"requestId":"req_1","message":{"id":"msg_1",`+
+		`"model":"claude-opus-5","usage":{"input_tokens":1,"cache_creation_input_tokens":300,`+
+		`"cache_read_input_tokens":0,"output_tokens":1,"cache_creation":{"ephemeral_5m_input_tokens":100,`+
+		`"ephemeral_1h_input_tokens":200}}}}`, now.UTC().Format(time.RFC3339Nano))
+	t.Setenv("CLAUDE_CONFIG_DIR", writeClaudeTranscript(t, "project-a", "session.jsonl", []string{line}))
+
+	byModel, _, err := readDay(readClaude, startOfDay(now))
+	if err != nil {
+		t.Fatalf("readClaude() error = %v", err)
+	}
+	if got := byModel["claude-opus-5"]; got.CacheWrite != 300 || got.CacheWrite1h != 200 {
+		t.Fatalf("tokens = %+v, want 300 cache writes, 200 of them for an hour", got)
+	}
+}
+
 func TestReadClaudeSkipsTranscriptsUntouchedToday(t *testing.T) {
 	now := time.Now()
 	dir := writeClaudeTranscript(t, "project-a", "old.jsonl", []string{
@@ -68,7 +108,7 @@ func TestReadClaudeSkipsTranscriptsUntouchedToday(t *testing.T) {
 	t.Setenv("CLAUDE_CONFIG_DIR", dir)
 
 	start := startOfDay(now)
-	byModel, _, err := readClaude(start, start.AddDate(0, 0, 1))
+	byModel, _, err := readDay(readClaude, start)
 	if err != nil {
 		t.Fatalf("readClaude() error = %v", err)
 	}
@@ -81,7 +121,7 @@ func TestReadClaudeReportsUnavailableWithoutAProjectsDir(t *testing.T) {
 	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
 
 	start := startOfDay(time.Now())
-	_, available, err := readClaude(start, start.AddDate(0, 0, 1))
+	_, available, err := readDay(readClaude, start)
 	if err != nil {
 		t.Fatalf("readClaude() error = %v", err)
 	}
@@ -100,6 +140,12 @@ func TestClaudeRootsSplitsTheConfigDirList(t *testing.T) {
 func writeClaudeTranscript(t *testing.T, project, name string, lines []string) string {
 	t.Helper()
 	root := t.TempDir()
+	writeClaudeTranscriptIn(t, root, project, name, lines)
+	return root
+}
+
+func writeClaudeTranscriptIn(t *testing.T, root, project, name string, lines []string) {
+	t.Helper()
 	dir := filepath.Join(root, "projects", project)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("MkdirAll() error = %v", err)
@@ -111,5 +157,4 @@ func writeClaudeTranscript(t *testing.T, project, name string, lines []string) s
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
-	return root
 }

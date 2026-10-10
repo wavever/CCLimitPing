@@ -15,8 +15,9 @@ Depending on the providers you enable, `limitping` may read:
 - Provider usage responses used to calculate reset times
 - Claude Code / Codex session transcripts (`~/.claude/projects`,
   `~/.codex/sessions`, honoring `$CLAUDE_CONFIG_DIR` / `$CODEX_HOME`) when
-  `status` totals the day's token usage. Only the token-count and model fields
-  of today's records are read; prompts and responses are not parsed, and nothing
+  `status` totals the day's, week's and month's token usage. Only the
+  token-count and model fields of this month's (and, early in a month, this
+  week's) records are read; prompts and responses are not parsed, and nothing
   from these files leaves the machine
 
 The tool may write:

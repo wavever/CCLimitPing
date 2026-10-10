@@ -63,11 +63,11 @@ func runStatus(ctx context.Context, out, progress io.Writer, text cliText, provi
 	failed := 0
 	entries := make([]statusJSON, 0, len(providers))
 	for _, p := range providers {
-		// Started first and collected last: reading the day's transcripts is
+		// Started first and collected last: reading the month's transcripts is
 		// pure local I/O, so it rides along with the network round trip instead
 		// of adding to it.
-		spendCh := make(chan *spend.Day, 1)
-		go func() { spendCh <- todaySpend(ctx, p.Name()) }()
+		spendCh := make(chan *spend.Summary, 1)
+		go func() { spendCh <- localSpend(ctx, p.Name()) }()
 
 		if text.statusFetchingFmt != "" {
 			fmt.Fprintf(progress, text.statusFetchingFmt, p.Name())
@@ -79,7 +79,7 @@ func runStatus(ctx context.Context, out, progress io.Writer, text cliText, provi
 		readCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		u, err := read(readCtx)
 		cancel()
-		day := <-spendCh
+		sum := <-spendCh
 		if err != nil {
 			failed++
 			if jsonOut {
@@ -90,10 +90,10 @@ func runStatus(ctx context.Context, out, progress io.Writer, text cliText, provi
 			continue
 		}
 		if jsonOut {
-			entries = append(entries, newStatusJSON(u, verbose, day))
+			entries = append(entries, newStatusJSON(u, verbose, sum))
 			continue
 		}
-		printUsageBody(out, text, u, verbose, display, day)
+		printUsageBody(out, text, u, verbose, display, sum)
 		// Inside the provider's block, so status and ping render it alike.
 		fmt.Fprint(out, hooksAdvice(text, p.Name()))
 		fmt.Fprintln(out)
@@ -132,7 +132,9 @@ type statusJSON struct {
 	ResetCredits *resetCreditsJSON `json:"reset_credits,omitempty"`
 	// Why the reset credits could not be read, when they could not.
 	ResetCreditsError string          `json:"reset_credits_error,omitempty"`
-	Today             *todayJSON      `json:"today,omitempty"`
+	Today             *spendJSON      `json:"today,omitempty"`
+	Week              *spendJSON      `json:"week,omitempty"`
+	Month             *spendJSON      `json:"month,omitempty"`
 	LimitReached      bool            `json:"limit_reached"`
 	FetchedAt         string          `json:"fetched_at,omitempty"`
 	Raw               json.RawMessage `json:"raw,omitempty"`
@@ -185,12 +187,15 @@ type resetCreditJSON struct {
 	RequiresLimit bool     `json:"requires_limit,omitempty"`
 }
 
-// todayJSON is the local day's token consumption, read from the provider CLI's
-// own transcripts. cost_usd is what those tokens would cost at API rates;
-// cost_complete is false when a model that ran had no published rates, which
-// makes cost_usd a lower bound.
-type todayJSON struct {
-	Date                string           `json:"date"`
+// spendJSON is the local token consumption over a calendar period (the day, the
+// week since Monday, the month since the 1st), read from the provider CLI's own
+// transcripts. start is the period's first local day; today also carries it as
+// date, the key it has always had. cost_usd is what those tokens would cost at
+// API rates; cost_complete is false when a model that ran had no published
+// rates, which makes cost_usd a lower bound.
+type spendJSON struct {
+	Date                string           `json:"date,omitempty"`
+	Start               string           `json:"start"`
 	InputTokens         int              `json:"input_tokens"`
 	CacheReadTokens     int              `json:"cache_read_tokens"`
 	CacheCreationTokens int              `json:"cache_creation_tokens"`
@@ -198,16 +203,16 @@ type todayJSON struct {
 	TotalTokens         int              `json:"total_tokens"`
 	CostUSD             float64          `json:"cost_usd"`
 	CostComplete        bool             `json:"cost_complete"`
-	Models              []todayModelJSON `json:"models,omitempty"`
+	Models              []spendModelJSON `json:"models,omitempty"`
 }
 
-type todayModelJSON struct {
+type spendModelJSON struct {
 	Model       string  `json:"model,omitempty"`
 	TotalTokens int     `json:"total_tokens"`
 	CostUSD     float64 `json:"cost_usd"`
 }
 
-func newStatusJSON(u *usage.Usage, verbose bool, day *spend.Day) statusJSON {
+func newStatusJSON(u *usage.Usage, verbose bool, sum *spend.Summary) statusJSON {
 	s := statusJSON{
 		Provider:     u.Provider,
 		Plan:         u.Plan,
@@ -240,7 +245,14 @@ func newStatusJSON(u *usage.Usage, verbose bool, day *spend.Day) statusJSON {
 	if u.ResetCreditsError != nil {
 		s.ResetCreditsError = u.ResetCreditsError.Error()
 	}
-	s.Today = newTodayJSON(day)
+	if sum != nil {
+		s.Today = newSpendJSON(sum.Today)
+		if s.Today != nil {
+			s.Today.Date = s.Today.Start
+		}
+		s.Week = newSpendJSON(sum.Week)
+		s.Month = newSpendJSON(sum.Month)
+	}
 	if verbose && json.Valid(u.Raw) {
 		s.Raw = json.RawMessage(u.Raw)
 	}
@@ -285,25 +297,25 @@ func newResetCreditsJSON(rc *usage.ResetCredits) *resetCreditsJSON {
 	return out
 }
 
-// newTodayJSON renders the day's spend, or nothing at all when the provider's
+// newSpendJSON renders a period's spend, or nothing at all when the provider's
 // CLI has never run on this machine — an absent key says "no local data", which
 // zeros would misreport as "nothing was spent".
-func newTodayJSON(day *spend.Day) *todayJSON {
-	if day == nil || !day.Available {
+func newSpendJSON(p spend.Period) *spendJSON {
+	if !p.Available {
 		return nil
 	}
-	out := &todayJSON{
-		Date:                day.Date.Format("2006-01-02"),
-		InputTokens:         day.Tokens.Input,
-		CacheReadTokens:     day.Tokens.CacheRead,
-		CacheCreationTokens: day.Tokens.CacheWrite,
-		OutputTokens:        day.Tokens.Output,
-		TotalTokens:         day.Tokens.Total(),
-		CostUSD:             roundUSD(day.CostUSD),
-		CostComplete:        day.Priced,
+	out := &spendJSON{
+		Start:               p.Start.Format("2006-01-02"),
+		InputTokens:         p.Tokens.Input,
+		CacheReadTokens:     p.Tokens.CacheRead,
+		CacheCreationTokens: p.Tokens.CacheWrite,
+		OutputTokens:        p.Tokens.Output,
+		TotalTokens:         p.Tokens.Total(),
+		CostUSD:             roundUSD(p.CostUSD),
+		CostComplete:        p.Priced,
 	}
-	for _, m := range day.Models {
-		out.Models = append(out.Models, todayModelJSON{
+	for _, m := range p.Models {
+		out.Models = append(out.Models, spendModelJSON{
 			Model:       m.Model,
 			TotalTokens: m.Tokens.Total(),
 			CostUSD:     roundUSD(m.CostUSD),
@@ -326,14 +338,14 @@ func timeJSON(t time.Time) string {
 }
 
 // printUsage renders one provider's block, closed by a blank line.
-func printUsage(out io.Writer, text cliText, u *usage.Usage, verbose bool, display string, day *spend.Day) {
-	printUsageBody(out, text, u, verbose, display, day)
+func printUsage(out io.Writer, text cliText, u *usage.Usage, verbose bool, display string, sum *spend.Summary) {
+	printUsageBody(out, text, u, verbose, display, sum)
 	fmt.Fprintln(out)
 }
 
 // printUsageBody is printUsage without the closing blank line, for callers that
 // add lines of their own to the block.
-func printUsageBody(out io.Writer, text cliText, u *usage.Usage, verbose bool, display string, day *spend.Day) {
+func printUsageBody(out io.Writer, text cliText, u *usage.Usage, verbose bool, display string, sum *spend.Summary) {
 	display = normalizeUsageDisplay(display)
 	plan := u.Plan
 	if plan != "" {
@@ -345,7 +357,7 @@ func printUsageBody(out io.Writer, text cliText, u *usage.Usage, verbose bool, d
 	for _, l := range u.ScopedLimits {
 		fmt.Fprintf(out, text.statusScopedLineFmt, l.Label, fmtWindow(text, l.Window, display))
 	}
-	printToday(out, text, day, verbose)
+	printSpend(out, text, sum, verbose)
 	if u.Credits != nil && (u.Credits.HasCredits || u.Credits.Unlimited) {
 		if u.Credits.Unlimited {
 			fmt.Fprint(out, text.statusCreditsUnlimited)
@@ -364,36 +376,44 @@ func printUsageBody(out io.Writer, text cliText, u *usage.Usage, verbose bool, d
 	}
 }
 
-// todaySpend reads what the provider's local CLI sessions consumed today. It is
-// a best-effort extra: a transcript that cannot be read costs the line, never
-// the status command.
-func todaySpend(ctx context.Context, name string) *spend.Day {
+// localSpend reads what the provider's local CLI sessions consumed today, this
+// week and this month. It is a best-effort extra: a transcript that cannot be
+// read costs the lines, never the status command.
+func localSpend(ctx context.Context, name string) *spend.Summary {
 	ctx, cancel := context.WithTimeout(ctx, spendTimeout)
 	defer cancel()
-	day, err := spend.Today(ctx, name)
-	if err != nil && day.Empty() {
+	sum, err := spend.Summarize(ctx, name, time.Now())
+	if err != nil && sum.Month.Empty() && sum.Week.Empty() {
 		return nil
 	}
-	return &day
+	return &sum
 }
 
-// printToday renders the day's token consumption and what it would have cost at
-// API rates — the usage endpoints report percentages only, so this is the one
-// place a subscription's actual consumption becomes a number. Nothing is
-// printed for a provider whose CLI has never run on this machine: silence is
-// honest there, while "0 tok" would claim a quiet day.
-func printToday(out io.Writer, text cliText, day *spend.Day, verbose bool) {
-	if day == nil || !day.Available {
+// printSpend renders the day's, week's and month's token consumption and what
+// it would have cost at API rates — the usage endpoints report percentages
+// only, so this is the one place a subscription's actual consumption becomes a
+// number. Nothing is printed for a provider whose CLI has never run on this
+// machine: silence is honest there, while "0 tokens" would claim a quiet month.
+func printSpend(out io.Writer, text cliText, sum *spend.Summary, verbose bool) {
+	if sum == nil || !sum.Today.Available {
 		return
 	}
-	fmt.Fprintf(out, text.statusTodayLineFmt, fmtSpend(text, day.Tokens.Total(), day.CostUSD))
-	if !verbose || day.Empty() {
+	printPeriod(out, text, text.statusTodayLineFmt, sum.Today, verbose)
+	printPeriod(out, text, text.statusWeekSpendLineFmt, sum.Week, verbose)
+	printPeriod(out, text, text.statusMonthSpendLineFmt, sum.Month, verbose)
+}
+
+// printPeriod renders one period's line under lineFmt, followed with -v by its
+// token buckets and per-model split.
+func printPeriod(out io.Writer, text cliText, lineFmt string, p spend.Period, verbose bool) {
+	fmt.Fprintf(out, lineFmt, fmtSpend(text, p.Tokens.Total(), p.CostUSD))
+	if !verbose || p.Empty() {
 		return
 	}
 	fmt.Fprintf(out, text.statusTodayBreakdownFmt,
-		humanTokens(day.Tokens.Input), humanTokens(day.Tokens.CacheRead),
-		humanTokens(day.Tokens.CacheWrite), humanTokens(day.Tokens.Output))
-	for _, m := range day.Models {
+		humanTokens(p.Tokens.Input), humanTokens(p.Tokens.CacheRead),
+		humanTokens(p.Tokens.CacheWrite), humanTokens(p.Tokens.Output))
+	for _, m := range p.Models {
 		name := m.Model
 		if name == "" {
 			name = text.statusTodayUnknownModel
@@ -402,7 +422,7 @@ func printToday(out io.Writer, text cliText, day *spend.Day, verbose bool) {
 	}
 }
 
-// fmtSpend renders "47.9M tok  ≈ $38.15", dropping the cost when the model's
+// fmtSpend renders "47.9M tokens  ≈ $38.15", dropping the cost when the model's
 // rates are unknown (an unpublished or brand-new model).
 func fmtSpend(text cliText, tokens int, costUSD float64) string {
 	s := fmt.Sprintf(text.statusTodayTokensFmt, humanTokens(tokens))

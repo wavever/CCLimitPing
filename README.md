@@ -27,7 +27,7 @@ after the terminal closes.
 
 ```
 claude  ✓ pinged (6.6s)
-codex   ✓ pinged (14s, 19,426 tok (in 19,414 / out 12), $0.0023)
+codex   ✓ pinged (14s, 19,426 tokens (in 19,414 / out 12), $0.0023)
 ```
 
 ## Highlights
@@ -37,8 +37,9 @@ codex   ✓ pinged (14s, 19,426 tok (in 19,414 / out 12), $0.0023)
   `bg start` with `bg status`, `bg logs -f`, and `bg stop`.
 - Shows 5h and weekly usage, reset countdowns, and background watcher state from
   read-only usage endpoints.
-- Counts today's tokens and what they would have cost at API rates, read from the
-  CLIs' own local session transcripts — the number the percentages never show.
+- Counts today's, this week's and this month's tokens and what they would have
+  cost at API rates, read from the CLIs' own local session transcripts — the
+  number the percentages never show.
 - Triggers Claude Code and Codex through their official CLIs using your existing
   logged-in credentials.
 - Detects active Claude/Codex turns via CLI hooks, so a ping never interrupts a
@@ -220,7 +221,7 @@ logged in.
 
 ```sh
 limitping config init          # write ~/.config/limitping/config.toml
-limitping status               # 5h/weekly % + reset countdowns + today's tokens (alias: s)
+limitping status               # 5h/weekly % + reset countdowns + today/week/month tokens (alias: s)
 limitping status --json        # machine-readable JSON for each provider
 limitping status -v            # also print the per-model breakdown and raw JSON
 limitping ping                 # trigger all enabled providers now (alias: p)
@@ -290,7 +291,7 @@ machine-readable per-ping usage, so it shows elapsed time only:
 claude  → claude --model haiku --session-id 6f1c2a9e-4b7d-4e2a-9c31-0d5e8f7a1b23 --settings "{\"disableAllHooks\":true,\"promptSuggestionEnabled\":false}" --strict-mcp-config --tools "" -- .
 claude  ✓ pinged (6.6s)
 codex   → codex exec --ephemeral --json --skip-git-repo-check --disable hooks --sandbox read-only -c model_reasoning_effort=low -m gpt-5.6-luna ok
-codex   ✓ pinged (14s, 19,426 tok (in 19,414 / out 12), $0.0023)
+codex   ✓ pinged (14s, 19,426 tokens (in 19,414 / out 12), $0.0023)
 ```
 
 `ping` and the `watch` log always name the model. In the rare case limitping
@@ -314,12 +315,16 @@ Example `status`:
 claude
   5h     [█████░░░░░]  51.0% used      resets in 3h14m    (Sun 00:10 UTC+8)
   weekly [█████░░░░░]  54.0% used      resets in 7h04m    (Sun 04:00 UTC+8)
-  today  55.0M tok  ≈ $41.03
+  today  55.0M tokens  ≈ $41.03
+  week   310.4M tokens  ≈ $198.72
+  month  1.02B tokens  ≈ $684.15
 
 codex (plus)
   5h     [██░░░░░░░░]  24.0% used      resets in 3h15m    (Sun 00:11 UTC+8)
   weekly [████░░░░░░]  37.0% used      resets in 111h57m  (Thu 12:53 UTC+8)
-  today  20.5M tok  ≈ $10.06
+  today  20.5M tokens  ≈ $10.06
+  week   96.3M tokens  ≈ $45.80
+  month  412.7M tokens  ≈ $187.24
   reset credits 1 reset available
     - available, granted Jun 17 17:38, expires Jul 17 17:38 UTC+8 (in 24d6h)
 ```
@@ -327,18 +332,21 @@ codex (plus)
 Text status defaults to **used** percentage. Set `usage_display = "remaining"` if
 you prefer the same mental model as Codex's "Usage remaining" UI.
 
-### Today's tokens and cost
+### Tokens and cost: today, this week, this month
 
-The `today` line answers what the percentages cannot: how much this machine
-actually consumed since local midnight, and what that would have cost at
-published API rates — the value a subscription is returning. The usage endpoints
+The `today`, `week` and `month` lines answer what the percentages cannot: how
+much this machine actually consumed since local midnight, since Monday and since
+the 1st of the month, and what that would have cost at published API rates —
+the value a subscription is returning. These are calendar periods, not the
+provider's rolling 5h/weekly windows. The usage endpoints
 only ever report percentages, so the tokens are totalled from the transcripts
 the CLIs already write to disk (`~/.claude/projects`, `~/.codex/sessions` —
 honoring `$CLAUDE_CONFIG_DIR` / `$CODEX_HOME`), the same source ccusage and
 CodexBar read, and priced with the [LiteLLM](https://github.com/BerriAI/litellm)
 dataset limitping already caches for `ping`. Nothing is uploaded: the scan is
-local, read-only, and runs alongside the usage fetch, so it costs no extra wall
-time.
+local, read-only, and runs alongside the usage fetch; one pass over the month's
+transcripts yields all three periods, and only files written to since the period
+began are opened.
 
 Two consequences worth knowing: it is a **local** view — sessions run on another
 machine, or in the web app, leave no transcript here and are not counted — and
@@ -346,17 +354,26 @@ the cost is an **estimate**, since a subscription does not bill per token. A
 model too new to be in the pricing dataset still has its tokens counted; it just
 adds nothing to the dollar figure (`cost_complete: false` in JSON).
 
-`status -v` breaks the day down by bucket and by model:
+Each request is priced on its own, the way the API would bill it: Claude Code's
+one-hour prompt-cache writes at the one-hour rate rather than the five-minute
+one, and a request whose prompt runs past a model's long-context threshold
+(272K tokens for OpenAI's, 200K where Anthropic has one) entirely at the
+long-context rates. A streamed Claude reply is counted once, at its final output
+count.
+
+`status -v` breaks each period down by bucket and by model:
 
 ```
-  today  55.0M tok  ≈ $41.03
+  today  55.0M tokens  ≈ $41.03
          in 770 · cache 53.6M read / 1.1M write · out 300.6K
-         claude-opus-5              54.9M tok  ≈ $40.95
-         claude-haiku-4-5-20251001  67.4K tok  ≈ $0.09
+         claude-opus-5              54.9M tokens  ≈ $40.95
+         claude-haiku-4-5-20251001  67.4K tokens  ≈ $0.09
+  week   310.4M tokens  ≈ $198.72
+         ...
 ```
 
-The line is omitted entirely for a provider whose CLI has never run on this
-machine — silence there is honest, where `0 tok` would claim a quiet day.
+The lines are omitted entirely for a provider whose CLI has never run on this
+machine — silence there is honest, where `0 tokens` would claim a quiet month.
 
 `status --json` returns the same data as a JSON array (one object per provider),
 for scripts and dashboards. Progress chatter is suppressed so stdout stays a
@@ -364,9 +381,11 @@ single valid document; a provider that fails to read becomes
 `{"provider": "...", "error": "..."}` and the command exits non-zero. Add `-v`
 to embed each provider's raw response under `raw`.
 
-`today` is omitted for a provider with no local transcripts at all; when
-present, `cost_usd` is the API-rate estimate and `cost_complete` is false if a
-model that ran had no published rates, making that figure a lower bound.
+`today`, `week` and `month` are omitted for a provider with no local transcripts
+at all. When present, each carries `start` (the period's first local day; `today`
+also keeps it as `date`), `cost_usd` is the API-rate estimate, and
+`cost_complete` is false if a model that ran had no published rates, making that
+figure a lower bound.
 
 A window key (`five_hour` / `weekly`) is omitted when the provider does not
 currently enforce that limit — e.g. OpenAI temporarily removed Codex's 5h
@@ -416,6 +435,7 @@ away, so a reset time is only ever shown for a window that is really running.
     },
     "today": {
       "date": "2026-06-17",
+      "start": "2026-06-17",
       "input_tokens": 674291,
       "cache_read_tokens": 19719552,
       "cache_creation_tokens": 0,
@@ -426,6 +446,34 @@ away, so a reset time is only ever shown for a window that is really running.
       "models": [
         { "model": "gpt-5.6-sol", "total_tokens": 13774852, "cost_usd": 7.748941 },
         { "model": "gpt-5.6-terra", "total_tokens": 6700030, "cost_usd": 2.310316 }
+      ]
+    },
+    "week": {
+      "start": "2026-06-15",
+      "input_tokens": 3102544,
+      "cache_read_tokens": 92800114,
+      "cache_creation_tokens": 0,
+      "output_tokens": 398201,
+      "total_tokens": 96300859,
+      "cost_usd": 45.801276,
+      "cost_complete": true,
+      "models": [
+        { "model": "gpt-5.6-sol", "total_tokens": 71203817, "cost_usd": 38.412530 },
+        { "model": "gpt-5.6-terra", "total_tokens": 25097042, "cost_usd": 7.388746 }
+      ]
+    },
+    "month": {
+      "start": "2026-06-01",
+      "input_tokens": 13250117,
+      "cache_read_tokens": 397840326,
+      "cache_creation_tokens": 0,
+      "output_tokens": 1609771,
+      "total_tokens": 412700214,
+      "cost_usd": 187.240913,
+      "cost_complete": true,
+      "models": [
+        { "model": "gpt-5.6-sol", "total_tokens": 298114660, "cost_usd": 154.902207 },
+        { "model": "gpt-5.6-terra", "total_tokens": 114585554, "cost_usd": 32.338706 }
       ]
     },
     "limit_reached": false,
@@ -654,7 +702,7 @@ internal/auth            Claude (Keychain) + Codex (auth.json) tokens
 internal/provider        per-provider ReadUsage (endpoint) + Trigger (CLI)
 internal/activity        hook-based active-session state (shared by the hook cmd + scheduler)
 internal/pricing         pricing helpers for providers that expose token usage
-internal/spend           today's tokens/cost, read from the CLIs' local session transcripts
+internal/spend           today/week/month tokens/cost, read from the CLIs' local session transcripts
 internal/scheduler       the watch engine (sleep-until-reset, weekly-respect, backoff)
 internal/notify          macOS osascript notifications
 internal/cli             cobra commands: status, ping, watch, schedule, continue, background, config, hooks, upgrade, uninstall, version

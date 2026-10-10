@@ -1,5 +1,6 @@
 // Package spend reports how many tokens the local Claude Code / Codex CLIs
-// consumed on a given day and what that would have cost at API rates.
+// consumed over the current day, week and month, and what that would have cost
+// at API rates.
 //
 // The providers' usage endpoints only publish rate-limit percentages — never a
 // token count — so the numbers come from the transcripts the CLIs already write
@@ -22,7 +23,7 @@ import (
 	"github.com/wavever/CCLimitPing/internal/pricing"
 )
 
-// ModelSpend is one model's share of a day.
+// ModelSpend is one model's share of a period.
 type ModelSpend struct {
 	Model   string
 	Tokens  pricing.Tokens
@@ -32,11 +33,13 @@ type ModelSpend struct {
 	Priced bool
 }
 
-// Day is a provider's local token consumption over one local calendar day.
-type Day struct {
+// Period is a provider's local token consumption over [Start, End), a run of
+// whole local calendar days.
+type Period struct {
 	Provider string
-	// Date is local midnight of the day covered.
-	Date time.Time
+	// Start is local midnight of the first day covered; End is local midnight
+	// of the day after the last.
+	Start, End time.Time
 	// Available reports whether the provider's transcript directory exists at
 	// all. False means this CLI has never run on this machine, which is very
 	// different from "it ran and spent nothing".
@@ -50,8 +53,14 @@ type Day struct {
 	Models []ModelSpend
 }
 
-// Empty reports whether the day recorded no tokens at all.
-func (d Day) Empty() bool { return d.Tokens.Total() == 0 }
+// Empty reports whether the period recorded no tokens at all.
+func (p Period) Empty() bool { return p.Tokens.Total() == 0 }
+
+// Summary is a provider's consumption over the calendar periods containing a
+// moment: its day, its week (Monday first) and its month.
+type Summary struct {
+	Today, Week, Month Period
+}
 
 // lookupPrice resolves a model's rates. It is a variable so tests can price
 // their fixtures without reaching for the live dataset.
@@ -59,53 +68,100 @@ var lookupPrice = func(ctx context.Context, model string) (pricing.Price, bool) 
 	return pricing.Default().Lookup(ctx, model)
 }
 
-// Today returns provider's consumption so far in the current local day.
-func Today(ctx context.Context, provider string) (Day, error) {
-	return For(ctx, provider, time.Now())
-}
+// sink receives one billed request: when it was made, the model that served it
+// and its tokens.
+type sink func(at time.Time, model string, tokens pricing.Tokens)
 
-// For returns provider's consumption over the local day containing at. An
-// unknown provider yields an unavailable Day rather than an error: reading
-// local transcripts is a best-effort extra, never a reason for status to fail.
-func For(ctx context.Context, provider string, at time.Time) (Day, error) {
-	start := startOfDay(at)
-	day := Day{Provider: provider, Date: start, Priced: true}
+// Summarize returns provider's consumption over the local day, week and month
+// containing at. All three come out of one pass over the transcripts, so the
+// day and week cost no reading beyond what the month already does. An unknown
+// provider yields unavailable periods rather than an error: reading local
+// transcripts is a best-effort extra, never a reason for status to fail.
+func Summarize(ctx context.Context, provider string, at time.Time) (Summary, error) {
+	day := startOfDay(at)
+	week := day.AddDate(0, 0, -(int(day.Weekday())+6)%7)
+	month := time.Date(day.Year(), day.Month(), 1, 0, 0, 0, 0, day.Location())
+	s := Summary{
+		Today: Period{Provider: provider, Start: day, End: day.AddDate(0, 0, 1), Priced: true},
+		Week:  Period{Provider: provider, Start: week, End: week.AddDate(0, 0, 7), Priced: true},
+		Month: Period{Provider: provider, Start: month, End: month.AddDate(0, 1, 0), Priced: true},
+	}
 
-	var (
-		byModel   map[string]pricing.Tokens
-		available bool
-		err       error
-	)
+	var read func(since time.Time, add sink) (bool, error)
 	switch provider {
 	case "claude":
-		byModel, available, err = readClaude(start, start.AddDate(0, 0, 1))
+		read = readClaude
 	case "codex":
-		byModel, available, err = readCodex(start, start.AddDate(0, 0, 1))
+		read = readCodex
 	default:
-		return day, nil
+		return s, nil
 	}
-	// An unreadable transcript is reported, but whatever was read is still
-	// totalled: a partial day beats no day at all.
-	day.Available = available
 
-	for model, tokens := range byModel {
-		ms := ModelSpend{Model: model, Tokens: tokens}
-		if price, ok := lookupPrice(ctx, model); ok {
-			ms.CostUSD, ms.Priced = price.CostOf(tokens), true
-			day.CostUSD += ms.CostUSD
-		} else if tokens.Total() > 0 {
-			day.Priced = false
-		}
-		day.Tokens.Add(tokens)
-		day.Models = append(day.Models, ms)
+	periods := []*Period{&s.Today, &s.Week, &s.Month}
+	byModel := make([]map[string]*ModelSpend, len(periods))
+	for i := range byModel {
+		byModel[i] = map[string]*ModelSpend{}
 	}
-	sort.Slice(day.Models, func(i, j int) bool {
-		if a, b := day.Models[i].Tokens.Total(), day.Models[j].Tokens.Total(); a != b {
+	// rates memoizes each model's lookup; a nil entry marks a model with no
+	// published rates.
+	rates := map[string]*pricing.Price{}
+	// A week that began last month reaches back further than the month does.
+	since := month
+	if week.Before(since) {
+		since = week
+	}
+	available, err := read(since, func(at time.Time, model string, tokens pricing.Tokens) {
+		rate, looked := rates[model]
+		if !looked {
+			if r, ok := lookupPrice(ctx, model); ok {
+				rate = &r
+			}
+			rates[model] = rate
+		}
+		// Priced request by request: a long-context surcharge depends on each
+		// request's own prompt, which a model's total no longer shows.
+		var cost float64
+		if rate != nil {
+			cost = rate.CostOf(tokens)
+		}
+		for i, p := range periods {
+			if at.Before(p.Start) || !at.Before(p.End) {
+				continue
+			}
+			ms := byModel[i][model]
+			if ms == nil {
+				ms = &ModelSpend{Model: model, Priced: rate != nil}
+				byModel[i][model] = ms
+			}
+			ms.Tokens.Add(tokens)
+			ms.CostUSD += cost
+		}
+	})
+	// An unreadable transcript is reported, but whatever was read is still
+	// totalled: a partial period beats none at all.
+	for i, p := range periods {
+		p.Available = available
+		p.total(byModel[i])
+	}
+	return s, err
+}
+
+// total sums byModel into p.
+func (p *Period) total(byModel map[string]*ModelSpend) {
+	for _, ms := range byModel {
+		if !ms.Priced && ms.Tokens.Total() > 0 {
+			p.Priced = false
+		}
+		p.CostUSD += ms.CostUSD
+		p.Tokens.Add(ms.Tokens)
+		p.Models = append(p.Models, *ms)
+	}
+	sort.Slice(p.Models, func(i, j int) bool {
+		if a, b := p.Models[i].Tokens.Total(), p.Models[j].Tokens.Total(); a != b {
 			return a > b
 		}
-		return day.Models[i].Model < day.Models[j].Model
+		return p.Models[i].Model < p.Models[j].Model
 	})
-	return day, err
 }
 
 func startOfDay(t time.Time) time.Time {
@@ -113,24 +169,24 @@ func startOfDay(t time.Time) time.Time {
 	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
 }
 
-// withinDay reports whether an RFC3339 transcript stamp falls in [start, end).
-// An unparseable or missing stamp is excluded: a record that cannot be dated
-// cannot be attributed to today.
-func withinDay(stamp string, start, end time.Time) bool {
+// stampSince parses an RFC3339 transcript stamp, reporting false unless it
+// falls at or after since. An unparseable or missing stamp is excluded: a
+// record that cannot be dated cannot be attributed to any period.
+func stampSince(stamp string, since time.Time) (time.Time, bool) {
 	if stamp == "" {
-		return false
+		return time.Time{}, false
 	}
 	t, err := time.Parse(time.RFC3339, stamp)
-	if err != nil {
-		return false
+	if err != nil || t.Before(since) {
+		return time.Time{}, false
 	}
-	return !t.Before(start) && t.Before(end)
+	return t, true
 }
 
 // transcripts returns the .jsonl files under root that were last written on or
 // after notBefore. A transcript is append-only, so one untouched since before
-// the day cannot hold any of its records — which is what keeps this cheap on a
-// history of hundreds of megabytes.
+// the period cannot hold any of its records — which is what keeps this cheap on
+// a history of hundreds of megabytes.
 func transcripts(root string, notBefore time.Time) ([]string, error) {
 	var out []string
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {

@@ -380,11 +380,17 @@ func TestPrintUsageShowsTodaysTokensAndCost(t *testing.T) {
 	var out bytes.Buffer
 	u := &usage.Usage{Provider: "claude", FiveHour: usage.Window{UsedPercent: 12}}
 
-	printUsage(&out, enText, u, false, "used", &testDay)
+	printUsage(&out, enText, u, false, "used", &testSummary)
 
 	got := out.String()
-	if !strings.Contains(got, "today  1.2M tok  ≈ $3.45") {
-		t.Fatalf("status output = %q, want today's tokens and cost", got)
+	for _, want := range []string{
+		"today  1.2M tokens  ≈ $3.45\n",
+		"week   20.4M tokens  ≈ $42.50\n",
+		"month  81.4M tokens  ≈ $160.00\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("status output = %q, want it to contain %q", got, want)
+		}
 	}
 	if strings.Contains(got, "claude-opus-5") {
 		t.Fatalf("status output = %q, want the per-model breakdown held back for -v", got)
@@ -395,16 +401,16 @@ func TestPrintUsageBreaksTodayDownWhenVerbose(t *testing.T) {
 	var out bytes.Buffer
 	u := &usage.Usage{Provider: "claude"}
 
-	printUsage(&out, enText, u, true, "used", &testDay)
+	printUsage(&out, enText, u, true, "used", &testSummary)
 
 	got := out.String()
 	for _, want := range []string{
 		"in 20.0K · cache 1.1M read / 100.0K write · out 5,000",
 		"claude-opus-5",
-		"1.2M tok  ≈ $3.45",
+		"1.2M tokens  ≈ $3.45",
 		// The model with no published rates is still counted, just not costed.
 		"brand-new-model",
-		"5,000 tok\n",
+		"5,000 tokens\n",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("verbose status output = %q, want it to contain %q", got, want)
@@ -416,13 +422,13 @@ func TestPrintUsageOmitsTodayWithoutLocalTranscripts(t *testing.T) {
 	var out bytes.Buffer
 	u := &usage.Usage{Provider: "claude"}
 
-	// The CLI has never run on this machine: "0 tok" would claim a quiet day
+	// The CLI has never run on this machine: "0 tokens" would claim a quiet day
 	// that limitping has no way to know about.
-	printUsage(&out, enText, u, false, "used", &spend.Day{Provider: "claude"})
+	printUsage(&out, enText, u, false, "used", &spend.Summary{Today: spend.Period{Provider: "claude"}})
 	printUsage(&out, enText, u, false, "used", nil)
 
-	if strings.Contains(out.String(), "today") {
-		t.Fatalf("status output = %q, want no today line without local data", out.String())
+	if got := out.String(); strings.Contains(got, "today") || strings.Contains(got, "month") {
+		t.Fatalf("status output = %q, want no spend lines without local data", got)
 	}
 }
 
@@ -430,23 +436,28 @@ func TestPrintUsageRendersTodayInChinese(t *testing.T) {
 	var out bytes.Buffer
 	u := &usage.Usage{Provider: "claude"}
 
-	printUsage(&out, zhText, u, true, "used", &testDay)
+	printUsage(&out, zhText, u, true, "used", &testSummary)
 
 	got := out.String()
-	for _, want := range []string{"今日   1.2M tok  ≈ $3.45", "输入 20.0K · 缓存 读 1.1M / 写 100.0K · 输出 5,000"} {
+	for _, want := range []string{
+		"今日   1.2M token  ≈ $3.45",
+		"输入 20.0K · 缓存 读 1.1M / 写 100.0K · 输出 5,000",
+		"本周   20.4M token  ≈ $42.50",
+		"本月   81.4M token  ≈ $160.00",
+	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("zh status output = %q, want it to contain %q", got, want)
 		}
 	}
 }
 
-func TestNewTodayJSONCarriesTheBucketsAndFlagsAPartialCost(t *testing.T) {
-	got := newTodayJSON(&testDay)
+func TestNewSpendJSONCarriesTheBucketsAndFlagsAPartialCost(t *testing.T) {
+	got := newSpendJSON(testDay)
 	if got == nil {
-		t.Fatal("newTodayJSON() = nil, want the day")
+		t.Fatal("newSpendJSON() = nil, want the day")
 	}
-	if got.Date != testDay.Date.Format("2006-01-02") {
-		t.Fatalf("date = %q, want the local day", got.Date)
+	if got.Start != "2026-09-14" {
+		t.Fatalf("start = %q, want the local day", got.Start)
 	}
 	if got.TotalTokens != 1_225_000 || got.CacheReadTokens != 1_100_000 || got.CacheCreationTokens != 100_000 {
 		t.Fatalf("today = %+v, want the buckets kept apart", got)
@@ -460,8 +471,28 @@ func TestNewTodayJSONCarriesTheBucketsAndFlagsAPartialCost(t *testing.T) {
 	if len(got.Models) != 2 || got.Models[0].Model != "claude-opus-5" {
 		t.Fatalf("models = %+v, want the per-model breakdown", got.Models)
 	}
-	if newTodayJSON(&spend.Day{Provider: "claude"}) != nil {
-		t.Fatal("newTodayJSON() returned a day for a provider with no local transcripts")
+	if newSpendJSON(spend.Period{Provider: "claude"}) != nil {
+		t.Fatal("newSpendJSON() returned a period for a provider with no local transcripts")
+	}
+}
+
+func TestNewStatusJSONReportsTodayWeekAndMonth(t *testing.T) {
+	got := newStatusJSON(&usage.Usage{Provider: "claude"}, false, &testSummary)
+	if got.Today == nil || got.Week == nil || got.Month == nil {
+		t.Fatalf("status = %+v, want today, week and month", got)
+	}
+	// Scripts written before week and month existed read today's "date".
+	if got.Today.Date != "2026-09-14" || got.Week.Date != "" {
+		t.Fatalf("dates = %q / %q, want date on today only", got.Today.Date, got.Week.Date)
+	}
+	if got.Week.Start != "2026-09-14" || got.Month.Start != "2026-09-01" {
+		t.Fatalf("starts = %q / %q, want Monday and the 1st", got.Week.Start, got.Month.Start)
+	}
+	if got.Week.CostUSD != 42.5 || got.Month.TotalTokens != 81_400_000 {
+		t.Fatalf("week = %+v, month = %+v, want their own totals", got.Week, got.Month)
+	}
+	if empty := newStatusJSON(&usage.Usage{Provider: "claude"}, false, nil); empty.Today != nil || empty.Week != nil || empty.Month != nil {
+		t.Fatalf("status = %+v, want no spend without a local read", empty)
 	}
 }
 
@@ -491,9 +522,10 @@ func TestFmtUSDKeepsSmallSumsVisible(t *testing.T) {
 
 // testDay is a day of local usage: one priced model and one the pricing dataset
 // has never heard of.
-var testDay = spend.Day{
+var testDay = spend.Period{
 	Provider:  "claude",
-	Date:      time.Date(2026, 9, 14, 0, 0, 0, 0, time.Local),
+	Start:     time.Date(2026, 9, 14, 0, 0, 0, 0, time.Local),
+	End:       time.Date(2026, 9, 15, 0, 0, 0, 0, time.Local),
 	Available: true,
 	Tokens:    pricing.Tokens{Input: 20_000, CacheRead: 1_100_000, CacheWrite: 100_000, Output: 5_000},
 	CostUSD:   3.45,
@@ -506,6 +538,29 @@ var testDay = spend.Day{
 			Priced:  true,
 		},
 		{Model: "brand-new-model", Tokens: pricing.Tokens{Input: 5_000}},
+	},
+}
+
+// testSummary puts testDay, a Monday, in its week and month.
+var testSummary = spend.Summary{
+	Today: testDay,
+	Week: spend.Period{
+		Provider:  "claude",
+		Start:     time.Date(2026, 9, 14, 0, 0, 0, 0, time.Local),
+		End:       time.Date(2026, 9, 21, 0, 0, 0, 0, time.Local),
+		Available: true,
+		Tokens:    pricing.Tokens{Input: 300_000, CacheRead: 20_000_000, Output: 100_000},
+		CostUSD:   42.5,
+		Priced:    true,
+	},
+	Month: spend.Period{
+		Provider:  "claude",
+		Start:     time.Date(2026, 9, 1, 0, 0, 0, 0, time.Local),
+		End:       time.Date(2026, 10, 1, 0, 0, 0, 0, time.Local),
+		Available: true,
+		Tokens:    pricing.Tokens{Input: 1_000_000, CacheRead: 80_000_000, Output: 400_000},
+		CostUSD:   160,
+		Priced:    true,
 	},
 }
 

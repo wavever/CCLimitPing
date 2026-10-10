@@ -560,7 +560,7 @@ func TestTriggerCost(t *testing.T) {
 		t.Fatalf("triggerCost(no usage) = %q", got)
 	}
 	res := &provider.TriggerResult{HasUsage: true, TotalTokens: 100, InputTokens: 90, OutputTokens: 10, CostUSD: 0.011}
-	want := " — 100 tok (in 90 / out 10), $0.0110"
+	want := " — 100 tokens (in 90 / out 10), $0.0110"
 	if got := triggerCost(res); got != want {
 		t.Fatalf("triggerCost = %q, want %q", got, want)
 	}

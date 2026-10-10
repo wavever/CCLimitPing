@@ -12,7 +12,7 @@ func TestScanBgPingHistory(t *testing.T) {
 		"2026/06/14 03:59:59 [codex] ping sent, new window started",
 		"not a limitping log line",
 		"2026/06/14 04:00:01 [codex] window reset — triggering ping now…",
-		"2026/06/14 04:00:02 [codex] ping sent, new window started — 12 tok",
+		"2026/06/14 04:00:02 [codex] ping sent, new window started — 12 tokens",
 		"2026/06/14 04:00:03 [claude] ping failed: boom (retry in 30s)",
 		"2026/06/14 04:00:04 [codex] DRY-RUN would ping now: codex exec",
 		"2026/06/14 04:00:05 [claude] dry-run ping failed: boom (retry in 30s)",

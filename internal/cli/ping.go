@@ -142,12 +142,12 @@ func report(out io.Writer, text cliText, name string, start time.Time, res *prov
 	fmt.Fprintf(out, text.pingSuccessFmt, name, elapsed(start), usageSuffix(res))
 }
 
-// usageSuffix renders the token/cost tail, e.g. ", 32,934 tok, $0.0110".
+// usageSuffix renders the token/cost tail, e.g. ", 32,934 tokens, $0.0110".
 func usageSuffix(res *provider.TriggerResult) string {
 	if res == nil || !res.HasUsage {
 		return ""
 	}
-	s := fmt.Sprintf(", %s tok (in %s / out %s)",
+	s := fmt.Sprintf(", %s tokens (in %s / out %s)",
 		humanInt(res.TotalTokens), humanInt(res.InputTokens), humanInt(res.OutputTokens))
 	if res.CostUSD > 0 {
 		s += fmt.Sprintf(", $%.4f", res.CostUSD)

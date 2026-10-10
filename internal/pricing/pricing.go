@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -30,7 +31,16 @@ type Price struct {
 	InputPerToken      float64
 	CachedReadPerToken float64
 	CacheWritePerToken float64
-	OutputPerToken     float64
+	// CacheWrite1hPerToken prices cache writes held for an hour, which
+	// Anthropic bills above the default five-minute TTL. Unset, it is twice the
+	// input rate, Anthropic's published multiplier.
+	CacheWrite1hPerToken float64
+	OutputPerToken       float64
+	// LongContext, when set, replaces every rate above for a request whose
+	// prompt exceeds LongContextAbove tokens — the whole request, not just the
+	// excess, as OpenAI (above 272K) and Anthropic (above 200K) bill it.
+	LongContext      *Price
+	LongContextAbove int
 }
 
 // Tokens is a token count split by billing bucket. Input counts only the
@@ -42,7 +52,10 @@ type Tokens struct {
 	Input      int
 	CacheRead  int
 	CacheWrite int
-	Output     int
+	// CacheWrite1h is the part of CacheWrite held for an hour rather than five
+	// minutes; it is not counted again in Total.
+	CacheWrite1h int
+	Output       int
 }
 
 // Total is every token in t, whatever it was billed at.
@@ -50,18 +63,29 @@ func (t Tokens) Total() int {
 	return t.Input + t.CacheRead + t.CacheWrite + t.Output
 }
 
+// Prompt is the request's whole input: fresh, cached and cache-written. It is
+// what a long-context threshold is measured against.
+func (t Tokens) Prompt() int {
+	return t.Input + t.CacheRead + t.CacheWrite
+}
+
 // Add accumulates o into t.
 func (t *Tokens) Add(o Tokens) {
 	t.Input += o.Input
 	t.CacheRead += o.CacheRead
 	t.CacheWrite += o.CacheWrite
+	t.CacheWrite1h += o.CacheWrite1h
 	t.Output += o.Output
 }
 
-// CostOf returns the USD cost of t at p's rates. A bucket whose rate the
-// dataset leaves unset (e.g. OpenAI models, which do not price cache writes
-// separately) bills at the plain input rate.
+// CostOf returns the USD cost of one request's tokens t at p's rates. It must
+// be given a single request, not a sum of them: whether the long-context rates
+// apply depends on that request's prompt alone. A bucket whose rate the dataset
+// leaves unset bills at the plain input rate.
 func (p Price) CostOf(t Tokens) float64 {
+	if p.LongContext != nil && t.Prompt() > p.LongContextAbove {
+		p = *p.LongContext
+	}
 	cacheRead := p.CachedReadPerToken
 	if cacheRead == 0 {
 		cacheRead = p.InputPerToken
@@ -70,9 +94,15 @@ func (p Price) CostOf(t Tokens) float64 {
 	if cacheWrite == 0 {
 		cacheWrite = p.InputPerToken
 	}
+	cacheWrite1h := p.CacheWrite1hPerToken
+	if cacheWrite1h == 0 {
+		cacheWrite1h = 2 * p.InputPerToken
+	}
+	hour := min(max(t.CacheWrite1h, 0), t.CacheWrite)
 	return float64(t.Input)*p.InputPerToken +
 		float64(t.CacheRead)*cacheRead +
-		float64(t.CacheWrite)*cacheWrite +
+		float64(t.CacheWrite-hour)*cacheWrite +
+		float64(hour)*cacheWrite1h +
 		float64(t.Output)*p.OutputPerToken
 }
 
@@ -86,11 +116,64 @@ func (p Price) Cost(inputTotal, cached, output int) float64 {
 	return p.CostOf(Tokens{Input: nonCached, CacheRead: cached, Output: output})
 }
 
-type entry struct {
-	InputCostPerToken           float64 `json:"input_cost_per_token"`
-	OutputCostPerToken          float64 `json:"output_cost_per_token"`
-	CacheReadInputTokenCost     float64 `json:"cache_read_input_token_cost"`
-	CacheCreationInputTokenCost float64 `json:"cache_creation_input_token_cost"`
+// longContextKey matches the input rate LiteLLM lists for prompts above a
+// threshold, e.g. input_cost_per_token_above_272k_tokens. Variants for other
+// service tiers (…_tokens_priority, …_batches) do not match.
+var longContextKey = regexp.MustCompile(`^input_cost_per_token_above_(\d+)k_tokens$`)
+
+// parseEntry reads one model's rates out of its LiteLLM entry, including the
+// one-hour cache-write rate and the long-context tier when the dataset has
+// them. ok is false for an entry without an input rate.
+func parseEntry(raw json.RawMessage) (Price, bool) {
+	var e map[string]any
+	if json.Unmarshal(raw, &e) != nil {
+		return Price{}, false
+	}
+	rate := func(key string) float64 {
+		v, _ := e[key].(float64)
+		return v
+	}
+	p := Price{
+		InputPerToken:        rate("input_cost_per_token"),
+		CachedReadPerToken:   rate("cache_read_input_token_cost"),
+		CacheWritePerToken:   rate("cache_creation_input_token_cost"),
+		CacheWrite1hPerToken: rate("cache_creation_input_token_cost_above_1hr"),
+		OutputPerToken:       rate("output_cost_per_token"),
+	}
+	if p.InputPerToken <= 0 {
+		return Price{}, false
+	}
+
+	// A model with several tiers is priced at its lowest: the first step up is
+	// the one a coding session's prompts actually reach.
+	threshold := 0
+	for key := range e {
+		m := longContextKey.FindStringSubmatch(key)
+		if m == nil {
+			continue
+		}
+		if k, err := strconv.Atoi(m[1]); err == nil && k > 0 && (threshold == 0 || k < threshold) {
+			threshold = k
+		}
+	}
+	if threshold == 0 || rate(fmt.Sprintf("input_cost_per_token_above_%dk_tokens", threshold)) <= 0 {
+		return p, true
+	}
+	above := func(key string, standard float64) float64 {
+		if v := rate(fmt.Sprintf(key, threshold)); v > 0 {
+			return v
+		}
+		return standard
+	}
+	p.LongContext = &Price{
+		InputPerToken:        above("input_cost_per_token_above_%dk_tokens", p.InputPerToken),
+		CachedReadPerToken:   above("cache_read_input_token_cost_above_%dk_tokens", p.CachedReadPerToken),
+		CacheWritePerToken:   above("cache_creation_input_token_cost_above_%dk_tokens", p.CacheWritePerToken),
+		CacheWrite1hPerToken: above("cache_creation_input_token_cost_above_1hr_above_%dk_tokens", p.CacheWrite1hPerToken),
+		OutputPerToken:       above("output_cost_per_token_above_%dk_tokens", p.OutputPerToken),
+	}
+	p.LongContextAbove = threshold * 1000
+	return p, true
 }
 
 // Fetcher loads and caches the LiteLLM dataset.
@@ -127,14 +210,8 @@ func (f *Fetcher) Lookup(ctx context.Context, model string) (Price, bool) {
 		if !ok {
 			continue
 		}
-		var e entry
-		if json.Unmarshal(rm, &e) == nil && e.InputCostPerToken > 0 {
-			return Price{
-				InputPerToken:      e.InputCostPerToken,
-				CachedReadPerToken: e.CacheReadInputTokenCost,
-				CacheWritePerToken: e.CacheCreationInputTokenCost,
-				OutputPerToken:     e.OutputCostPerToken,
-			}, true
+		if p, ok := parseEntry(rm); ok {
+			return p, true
 		}
 	}
 	return Price{}, false

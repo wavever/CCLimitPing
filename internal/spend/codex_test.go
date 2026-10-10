@@ -45,7 +45,7 @@ func TestReadCodexUsesPerResponseRecords(t *testing.T) {
 	t.Setenv("CODEX_HOME", dir)
 
 	start := startOfDay(now)
-	byModel, available, err := readCodex(start, start.AddDate(0, 0, 1))
+	byModel, available, err := readDay(readCodex, start)
 	if err != nil {
 		t.Fatalf("readCodex() error = %v", err)
 	}
@@ -59,6 +59,24 @@ func TestReadCodexUsesPerResponseRecords(t *testing.T) {
 	}
 	if got := byModel["gpt-5.6-sol"].Total(); got != 1010 {
 		t.Fatalf("gpt-5.6-sol total = %d, want 1010", got)
+	}
+}
+
+func TestReadCodexSplitsCacheWritesOutOfTheFreshInput(t *testing.T) {
+	now := time.Now()
+	line := fmt.Sprintf(`{"timestamp":%q,"type":"token_usage_record","payload":{"response_id":"resp_1",`+
+		`"usage":{"input_tokens":1000,"cached_input_tokens":600,"cache_write_input_tokens":300,"output_tokens":10}}}`,
+		now.UTC().Format(time.RFC3339Nano))
+	t.Setenv("CODEX_HOME", writeCodexRollout(t, "rollout-a.jsonl", []string{codexTurnContext(now, "gpt-6.1-sol"), line}))
+
+	byModel, _, err := readDay(readCodex, startOfDay(now))
+	if err != nil {
+		t.Fatalf("readCodex() error = %v", err)
+	}
+	// Newer models bill cache writes above the input rate, so they are their
+	// own bucket rather than part of the fresh input.
+	if got := byModel["gpt-6.1-sol"]; got.Input != 100 || got.CacheRead != 600 || got.CacheWrite != 300 || got.Prompt() != 1000 {
+		t.Fatalf("tokens = %+v, want 100 fresh / 600 cached / 300 written of a 1,000-token prompt", got)
 	}
 }
 
@@ -78,7 +96,7 @@ func TestReadCodexCountsAResumedThreadOnce(t *testing.T) {
 	t.Setenv("CODEX_HOME", dir)
 
 	start := startOfDay(now)
-	byModel, _, err := readCodex(start, start.AddDate(0, 0, 1))
+	byModel, _, err := readDay(readCodex, start)
 	if err != nil {
 		t.Fatalf("readCodex() error = %v", err)
 	}
@@ -97,7 +115,7 @@ func TestReadCodexFallsBackToTokenCountDeltas(t *testing.T) {
 	t.Setenv("CODEX_HOME", dir)
 
 	start := startOfDay(now)
-	byModel, _, err := readCodex(start, start.AddDate(0, 0, 1))
+	byModel, _, err := readDay(readCodex, start)
 	if err != nil {
 		t.Fatalf("readCodex() error = %v", err)
 	}
@@ -119,7 +137,7 @@ func TestReadCodexPrefersRecordsOverTheDuplicateTokenCounts(t *testing.T) {
 	t.Setenv("CODEX_HOME", dir)
 
 	start := startOfDay(now)
-	byModel, _, err := readCodex(start, start.AddDate(0, 0, 1))
+	byModel, _, err := readDay(readCodex, start)
 	if err != nil {
 		t.Fatalf("readCodex() error = %v", err)
 	}
@@ -132,7 +150,7 @@ func TestReadCodexReportsUnavailableWithoutASessionsDir(t *testing.T) {
 	t.Setenv("CODEX_HOME", t.TempDir())
 
 	start := startOfDay(time.Now())
-	_, available, err := readCodex(start, start.AddDate(0, 0, 1))
+	_, available, err := readDay(readCodex, start)
 	if err != nil {
 		t.Fatalf("readCodex() error = %v", err)
 	}

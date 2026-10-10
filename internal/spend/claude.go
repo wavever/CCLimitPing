@@ -29,17 +29,33 @@ type claudeEntry struct {
 			CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 			CacheReadInputTokens     int `json:"cache_read_input_tokens"`
 			OutputTokens             int `json:"output_tokens"`
+			// CacheCreation splits the cache writes by TTL; Claude Code asks
+			// for the one-hour cache, which bills above the five-minute one.
+			CacheCreation struct {
+				OneHour int `json:"ephemeral_1h_input_tokens"`
+			} `json:"cache_creation"`
 		} `json:"usage"`
 	} `json:"message"`
 }
 
-// readClaude totals Claude Code's transcript usage for [start, end) per model.
-func readClaude(start, end time.Time) (map[string]pricing.Tokens, bool, error) {
-	byModel := map[string]pricing.Tokens{}
+// claudeRequest is one API request's usage, as its fullest transcript line
+// reports it.
+type claudeRequest struct {
+	at     time.Time
+	model  string
+	tokens pricing.Tokens
+}
+
+// readClaude feeds add every Claude Code request made at or after since,
+// reporting whether Claude Code has a transcript directory here at all.
+func readClaude(since time.Time, add sink) (bool, error) {
 	// Claude Code writes the same assistant message once per stream update, so
-	// roughly half the usage lines in a transcript are repeats of a request
-	// already counted. Keyed on the API's own ids, not on the file position.
-	seen := map[string]bool{}
+	// roughly half the usage lines in a transcript are repeats of a request.
+	// Only the last carries the final output count — an early one can report a
+	// handful of tokens for a reply that ran to hundreds — so each request is
+	// held until every file is read and the line with the most output wins.
+	// Keyed on the API's own ids, not on the file position.
+	requests := map[string]*claudeRequest{}
 	available := false
 	var firstErr error
 
@@ -49,20 +65,25 @@ func readClaude(start, end time.Time) (map[string]pricing.Tokens, bool, error) {
 			continue
 		}
 		available = true
-		files, err := transcripts(projects, start)
+		files, err := transcripts(projects, since)
 		if err != nil && firstErr == nil {
 			firstErr = err
 		}
 		for _, path := range files {
-			if err := readClaudeFile(path, start, end, seen, byModel); err != nil && firstErr == nil {
+			if err := readClaudeFile(path, since, requests, add); err != nil && firstErr == nil {
 				firstErr = err
 			}
 		}
 	}
-	return byModel, available, firstErr
+	for _, r := range requests {
+		add(r.at, r.model, r.tokens)
+	}
+	return available, firstErr
 }
 
-func readClaudeFile(path string, start, end time.Time, seen map[string]bool, byModel map[string]pricing.Tokens) error {
+// readClaudeFile collects path's requests into requests, keeping the fullest
+// line of each, and feeds the few lines with no ids to add straight away.
+func readClaudeFile(path string, since time.Time, requests map[string]*claudeRequest, add sink) error {
 	marker := []byte(`"usage"`)
 	return forEachLine(path, func(line []byte) {
 		if !bytes.Contains(line, marker) {
@@ -75,24 +96,30 @@ func readClaudeFile(path string, start, end time.Time, seen map[string]bool, byM
 		if e.Type != "assistant" || e.Message.Model == "" || e.Message.Model == syntheticModel {
 			return
 		}
-		if !withinDay(e.Timestamp, start, end) {
+		at, ok := stampSince(e.Timestamp, since)
+		if !ok {
 			return
 		}
-		if key := e.Message.ID + "|" + e.RequestID; key != "|" {
-			if seen[key] {
-				return
-			}
-			seen[key] = true
-		}
 		u := e.Message.Usage
-		tokens := byModel[e.Message.Model]
-		tokens.Add(pricing.Tokens{
-			Input:      u.InputTokens,
-			CacheRead:  u.CacheReadInputTokens,
-			CacheWrite: u.CacheCreationInputTokens,
-			Output:     u.OutputTokens,
-		})
-		byModel[e.Message.Model] = tokens
+		tokens := pricing.Tokens{
+			Input:        u.InputTokens,
+			CacheRead:    u.CacheReadInputTokens,
+			CacheWrite:   u.CacheCreationInputTokens,
+			CacheWrite1h: u.CacheCreation.OneHour,
+			Output:       u.OutputTokens,
+		}
+		key := e.Message.ID + "|" + e.RequestID
+		if key == "|" {
+			add(at, e.Message.Model, tokens)
+			return
+		}
+		if r := requests[key]; r != nil {
+			if tokens.Output > r.tokens.Output {
+				r.tokens = tokens
+			}
+			return
+		}
+		requests[key] = &claudeRequest{at: at, model: e.Message.Model, tokens: tokens}
 	})
 }
 

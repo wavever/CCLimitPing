@@ -19,24 +19,26 @@ type codexLine struct {
 }
 
 // codexUsage is one request's token counts as Codex records them. InputTokens
-// is the whole prompt, CachedInputTokens the part of it served from cache.
+// is the whole prompt; CachedInputTokens is the part of it served from cache
+// and CacheWriteInputTokens the part written to it.
 type codexUsage struct {
-	InputTokens       int `json:"input_tokens"`
-	CachedInputTokens int `json:"cached_input_tokens"`
-	OutputTokens      int `json:"output_tokens"`
+	InputTokens           int `json:"input_tokens"`
+	CachedInputTokens     int `json:"cached_input_tokens"`
+	CacheWriteInputTokens int `json:"cache_write_input_tokens"`
+	OutputTokens          int `json:"output_tokens"`
 }
 
-// tokens splits u into billing buckets. Cache writes are left in Input: OpenAI
-// bills them at the input rate rather than a separate one.
+// tokens splits u into billing buckets, clamped so a malformed record can
+// never invent tokens the prompt did not have.
 func (u codexUsage) tokens() pricing.Tokens {
-	uncached := u.InputTokens - u.CachedInputTokens
-	if uncached < 0 {
-		uncached = 0
-	}
+	total := max(u.InputTokens, 0)
+	cached := min(max(u.CachedInputTokens, 0), total)
+	written := min(max(u.CacheWriteInputTokens, 0), total-cached)
 	return pricing.Tokens{
-		Input:     uncached,
-		CacheRead: u.CachedInputTokens,
-		Output:    u.OutputTokens,
+		Input:      total - cached - written,
+		CacheRead:  cached,
+		CacheWrite: written,
+		Output:     u.OutputTokens,
 	}
 }
 
@@ -44,23 +46,24 @@ func (u codexUsage) tokens() pricing.Tokens {
 // model in effect when it was made.
 type codexRecord struct {
 	key    string
+	at     time.Time
 	model  string
 	tokens pricing.Tokens
 }
 
-// readCodex totals Codex's rollout usage for [start, end) per model.
-func readCodex(start, end time.Time) (map[string]pricing.Tokens, bool, error) {
+// readCodex feeds add every Codex request made at or after since, reporting
+// whether Codex has a sessions directory here at all.
+func readCodex(since time.Time, add sink) (bool, error) {
 	root := codexSessionsDir()
-	byModel := map[string]pricing.Tokens{}
 	if root == "" || !dirExists(root) {
-		return byModel, false, nil
+		return false, nil
 	}
-	files, firstErr := transcripts(root, start)
+	files, firstErr := transcripts(root, since)
 	// Resuming a thread forks a new rollout that replays the records already
 	// written to the old one, so requests are deduplicated across files.
 	seen := map[string]bool{}
 	for _, path := range files {
-		records, err := readCodexFile(path, start, end)
+		records, err := readCodexFile(path, since)
 		if err != nil && firstErr == nil {
 			firstErr = err
 		}
@@ -69,12 +72,10 @@ func readCodex(start, end time.Time) (map[string]pricing.Tokens, bool, error) {
 				continue
 			}
 			seen[r.key] = true
-			tokens := byModel[r.model]
-			tokens.Add(r.tokens)
-			byModel[r.model] = tokens
+			add(r.at, r.model, r.tokens)
 		}
 	}
-	return byModel, true, firstErr
+	return true, firstErr
 }
 
 // readCodexFile extracts one rollout's requests. Codex 0.15x writes an explicit
@@ -82,7 +83,7 @@ func readCodex(start, end time.Time) (map[string]pricing.Tokens, bool, error) {
 // whose last_token_usage is the delta since the previous one. Both appear in a
 // single file only while a version straddles them, so the explicit records win
 // when present rather than being added to the deltas.
-func readCodexFile(path string, start, end time.Time) ([]codexRecord, error) {
+func readCodexFile(path string, since time.Time) ([]codexRecord, error) {
 	var records, deltas []codexRecord
 	model := ""
 
@@ -111,14 +112,18 @@ func readCodexFile(path string, start, end time.Time) ([]codexRecord, error) {
 				ResponseID string     `json:"response_id"`
 				Usage      codexUsage `json:"usage"`
 			}
-			if json.Unmarshal(l.Payload, &p) != nil || !withinDay(l.Timestamp, start, end) {
+			if json.Unmarshal(l.Payload, &p) != nil {
+				return
+			}
+			at, ok := stampSince(l.Timestamp, since)
+			if !ok {
 				return
 			}
 			key := p.ResponseID
 			if key == "" {
 				key = fmt.Sprintf("%s|%d", l.Timestamp, len(records))
 			}
-			records = append(records, codexRecord{key: key, model: model, tokens: p.Usage.tokens()})
+			records = append(records, codexRecord{key: key, at: at, model: model, tokens: p.Usage.tokens()})
 		case "event_msg":
 			var p struct {
 				Type string `json:"type"`
@@ -129,7 +134,8 @@ func readCodexFile(path string, start, end time.Time) ([]codexRecord, error) {
 			if json.Unmarshal(l.Payload, &p) != nil || p.Type != "token_count" || p.Info == nil {
 				return
 			}
-			if !withinDay(l.Timestamp, start, end) {
+			at, ok := stampSince(l.Timestamp, since)
+			if !ok {
 				return
 			}
 			u := p.Info.LastTokenUsage
@@ -137,7 +143,7 @@ func readCodexFile(path string, start, end time.Time) ([]codexRecord, error) {
 			// an identical token split, so a replayed record collapses onto the
 			// original instead of being counted twice.
 			key := fmt.Sprintf("%s|%d|%d|%d", l.Timestamp, u.InputTokens, u.CachedInputTokens, u.OutputTokens)
-			deltas = append(deltas, codexRecord{key: key, model: model, tokens: u.tokens()})
+			deltas = append(deltas, codexRecord{key: key, at: at, model: model, tokens: u.tokens()})
 		}
 	})
 	if len(records) > 0 {
