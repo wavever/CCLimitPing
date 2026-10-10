@@ -1,7 +1,7 @@
 // Package update tracks whether a newer limitping release exists, so a user is
 // told about it instead of having to remember to check. The published version
-// is cached in <config dir>/version.json and refreshed at most once a day, so
-// the common case costs no network at all:
+// is cached in <config dir>/version.json and refreshed at most every
+// CheckInterval, so the common case costs no network at all:
 //
 //	version.json  {latest_version, last_checked_at, dismissed_version}
 //
@@ -25,8 +25,11 @@ import (
 )
 
 const (
-	// CheckInterval bounds how often the release endpoint is contacted.
-	CheckInterval = 24 * time.Hour
+	// CheckInterval bounds how often the release endpoint is contacted. It
+	// was a day, which hid a release for up to a day after it shipped; a few
+	// hours keeps that short while staying far inside GitHub's anonymous rate
+	// limit (60 an hour per address).
+	CheckInterval = 4 * time.Hour
 	// checkTimeout keeps a slow or unreachable endpoint from holding up a
 	// command: an update notice is never worth making limitping feel stuck.
 	checkTimeout = 2 * time.Second
@@ -107,13 +110,30 @@ func Latest(ctx context.Context, client *http.Client) string {
 	}
 	fetched, err := fetchLatest(ctx, client)
 	// Record the attempt either way, so an endpoint that is down is retried
-	// once a day rather than on every single command.
+	// once per interval rather than on every single command.
 	s.LastCheckedAt = time.Now()
 	if err == nil && fetched != "" {
 		s.LatestVersion = fetched
 	}
 	_ = Save(s)
 	return s.LatestVersion
+}
+
+// Refresh asks the release endpoint whatever the cache holds, records what it
+// found, and returns it; "" when the lookup fails. It is for a person asking
+// outright — `upgrade` — where an answer cached before the release shipped
+// would turn the request down as "already the latest". Unlike Latest it never
+// falls back to the cache: a stale answer is the one thing it must not give.
+func Refresh(ctx context.Context, client *http.Client) string {
+	fetched, err := fetchLatest(ctx, client)
+	if err != nil || fetched == "" {
+		return ""
+	}
+	s := Load()
+	s.LatestVersion = fetched
+	s.LastCheckedAt = time.Now()
+	_ = Save(s)
+	return fetched
 }
 
 func fetchLatest(ctx context.Context, client *http.Client) (string, error) {

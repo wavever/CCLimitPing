@@ -37,8 +37,10 @@ func newUpgradeCmd() *cobra.Command {
 			out := cmd.OutOrStdout()
 			// Say so instead of re-downloading and reinstalling the same build.
 			// A failed or empty lookup falls through and upgrades anyway, which
-			// is the behaviour this command has always had.
-			if latest := update.Latest(ctx, updateHTTPClient); latest != "" && !force && isReleaseVersion() {
+			// is the behaviour this command has always had. The lookup is fresh,
+			// never the notice's cache: a version cached before the release
+			// shipped would turn the upgrade down as already current.
+			if latest := update.Refresh(ctx, updateHTTPClient); latest != "" && !force && isReleaseVersion() {
 				if update.Available(version(), latest, "") == "" {
 					fmt.Fprintf(out, text.upgradeCurrentFmt, update.Normalize(version()))
 					// Still repair the alias. A binary installed before the

@@ -176,7 +176,7 @@ it; the number keys still pick an option outright. The cursor starts on Skip
 because the notice interrupts the command you actually ran, so Enter, Esc and
 Ctrl-C all leave everything as it was. Option 3 records the release in
 `~/.config/limitping/version.json` and stays quiet until the next one. The check
-runs at most once a day, never blocks for more than two seconds, and is skipped
+runs at most every four hours, never blocks for more than two seconds, and is skipped
 entirely without an interactive terminal — so `--json`, the `hook` callback and
 background watchers stay silent.
 

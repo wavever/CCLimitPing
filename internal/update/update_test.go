@@ -126,6 +126,43 @@ func TestLatestKeepsCachedValueWhenTheLookupFails(t *testing.T) {
 	}
 }
 
+// `upgrade` must see a release published after the cache was filled, however
+// fresh that cache still is.
+func TestRefreshIgnoresAFreshCache(t *testing.T) {
+	useTempConfigDir(t)
+	if err := Save(State{LatestVersion: "0.9.0", LastCheckedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(`{"tag_name":"v0.10.0"}`)),
+			Request:    r,
+		}, nil
+	})}
+	if got := Refresh(context.Background(), client); got != "0.10.0" {
+		t.Fatalf("Refresh() = %q, want the published 0.10.0 over the cached 0.9.0", got)
+	}
+	if got := Load().LatestVersion; got != "0.10.0" {
+		t.Fatalf("cache = %q, want it updated so the notice agrees", got)
+	}
+}
+
+// A failed lookup must not answer from the cache: that answer may predate the
+// release, and `upgrade` would then refuse to install it.
+func TestRefreshDoesNotFallBackToTheCache(t *testing.T) {
+	useTempConfigDir(t)
+	if err := Save(State{LatestVersion: "0.9.0", LastCheckedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusServiceUnavailable, Body: io.NopCloser(strings.NewReader("nope"))}, nil
+	})}
+	if got := Refresh(context.Background(), client); got != "" {
+		t.Fatalf("Refresh() = %q on a failed lookup, want nothing", got)
+	}
+}
+
 func TestDismissRecordsOnlyThatVersion(t *testing.T) {
 	useTempConfigDir(t)
 	if err := Save(State{LatestVersion: "0.10.0"}); err != nil {
