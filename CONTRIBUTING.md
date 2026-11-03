@@ -53,9 +53,14 @@ validated without real credentials or paid quota.
 - [ ] `go build ./...` passes
 - [ ] `go vet ./...` passes
 - [ ] `go test ./...` passes
-- [ ] README or config examples are updated when user-facing behavior changes
+- [ ] README, docs, or config examples are updated when user-facing behavior changes
 - [ ] No credentials, raw usage responses, or private account metadata are
       included in tests, fixtures, logs, screenshots, or docs
+
+## Releasing
+
+Tag and push. The release notes and the rest of the process are in
+[docs/development.md](docs/development.md).
 
 ## Security Reports
 
