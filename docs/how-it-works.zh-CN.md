@@ -4,7 +4,7 @@
 
 `limitping` 做两件事，而且两条路径互不共用。读取用量永远不会起算窗口；触发窗口会，而且是故意的，走的是官方 CLI。
 
-返回 [中文 README](../README.zh-CN.md)。
+返回 [中文 README](../README.zh-CN.md) · [文档目录](README.zh-CN.md)。
 
 | 任务 | 机制 | 代价 |
 |------|------|------|
@@ -13,7 +13,7 @@
 
 当 `watch` 发现 5h 窗口已经重置时，会先检查是否有 Claude/Codex 会话正处于对话进行中。
 如果有，`limitping` 会等待并重新读取用量，而不是自己发 ping，因为这个会话的下一次模型
-请求会自然起算新窗口。这个检查依赖 [CLI 钩子](../README.zh-CN.md#活跃会话检测钩子)（安装脚本会自动装好）；
+请求会自然起算新窗口。这个检查依赖 [CLI 钩子](hooks.zh-CN.md#活跃会话检测钩子)（安装脚本会自动装好）；
 未安装钩子时，Claude 改用 Claude Code 自己的会话列表（`claude agents --json`）判断，Codex 改用
 它自己的会话日志（`~/.codex/sessions` 下最后一轮仍未结束的 rollout）判断（绝不靠扫描进程来猜）。
 

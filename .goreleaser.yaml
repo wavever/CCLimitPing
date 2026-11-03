@@ -38,6 +38,10 @@ archives:
       - README.md
       - README.zh-CN.md
       - LICENSE
+      # Keep the directory so README links to docs/ still resolve in the archive.
+      - src: docs/*
+        dst: docs
+        strip_parent: true
 
 checksum:
   name_template: "checksums.txt"

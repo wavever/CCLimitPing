@@ -4,7 +4,7 @@
 
 `limitping` does two jobs, and they do not share a code path. Reading usage never starts a window. Triggering one does, on purpose, through the official CLI.
 
-Back to the [README](../README.md).
+Back to the [README](../README.md) · [Docs index](README.md).
 
 | Job | Mechanism | Cost |
 |-----|-----------|------|
@@ -15,7 +15,7 @@ When `watch` sees a 5h window has reset, it first checks whether a Claude/Codex
 session is actively mid-turn. If one is, `limitping` waits and re-reads usage
 instead of sending its own ping, because that session's next model request will
 start the new window naturally. This check relies on the
-[CLI hooks](../README.md#active-session-detection-hooks) (installed automatically by the
+[CLI hooks](hooks.md#active-session-detection-hooks) (installed automatically by the
 install script). Without them, Claude Code's own session list
 (`claude agents --json`) answers for Claude, and Codex's own session log
 (a rollout under `~/.codex/sessions` whose last turn is still open) answers
