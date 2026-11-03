@@ -2,9 +2,9 @@
 
 **English** | [中文](how-it-works.zh-CN.md)
 
-[Docs index](README.md) · [Project README](../README.md)
+`limitping` does two jobs, and they do not share a code path. Reading usage never starts a window. Triggering one does, on purpose, through the official CLI.
 
-Two cleanly separated jobs:
+Back to the [README](../README.md) · [Docs index](README.md).
 
 | Job | Mechanism | Cost |
 |-----|-----------|------|

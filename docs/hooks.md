@@ -2,7 +2,7 @@
 
 **English** | [中文](hooks.zh-CN.md)
 
-[Docs index](README.md) · [Project README](../README.md)
+Back to the [README](../README.md) · [Docs index](README.md).
 
 At a window reset, `watch` avoids pinging while you're actively working — that
 turn would start the next window on its own. This relies on **CLI hooks**, which

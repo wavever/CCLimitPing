@@ -2,7 +2,7 @@
 
 **English** | [中文](caveats.zh-CN.md)
 
-[Docs index](README.md) · [Project README](../README.md)
+Back to the [README](../README.md) · [Docs index](README.md).
 
 - See [PRIVACY.md](../PRIVACY.md) for local data handling and network behavior.
 - See [SECURITY.md](../SECURITY.md) for vulnerability reporting and credential

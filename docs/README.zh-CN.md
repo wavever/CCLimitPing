@@ -2,9 +2,9 @@
 
 [English](README.md) | **中文**
 
-[CCLimitPing](../README.zh-CN.md) 的参考文档。项目首页是简短介绍,这些页面是细节。
+[CCLimitPing](../README.zh-CN.md) 的参考文档。项目首页是简短介绍，这些页面是细节。
 
-- [工作原理](how-it-works.zh-CN.md) — ping 发了什么,用量怎么读
+- [工作原理](how-it-works.zh-CN.md) — ping 发了什么，用量怎么读
 - [安装、升级与卸载](install.zh-CN.md)
 - [命令](commands.zh-CN.md) — 完整命令列表、简称和 `lmp`
 - [状态、token 与费用](status.zh-CN.md)

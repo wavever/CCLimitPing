@@ -2,7 +2,7 @@
 
 [English](caveats.md) | **中文**
 
-[文档目录](README.zh-CN.md) · [项目首页](../README.zh-CN.md)
+返回[中文 README](../README.zh-CN.md) · [文档目录](README.zh-CN.md)。
 
 - 本地数据处理和网络行为见 [PRIVACY.md](../PRIVACY.md)。
 - 漏洞报告和凭据处理说明见 [SECURITY.md](../SECURITY.md)。

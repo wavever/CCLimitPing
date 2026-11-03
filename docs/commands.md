@@ -2,7 +2,7 @@
 
 **English** | [中文](commands.zh-CN.md)
 
-[Docs index](README.md) · [Project README](../README.md)
+Back to the [README](../README.md) · [Docs index](README.md).
 
 Per-command details: [status and cost](status.md), [schedule](schedule.md), [background watch](background.md), [auto-continue](continue.md), [hooks](hooks.md), [install and upgrade](install.md).
 

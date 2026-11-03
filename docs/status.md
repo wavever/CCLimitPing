@@ -2,7 +2,7 @@
 
 **English** | [中文](status.zh-CN.md)
 
-[Docs index](README.md) · [Project README](../README.md)
+Back to the [README](../README.md) · [Docs index](README.md).
 
 Example `status`:
 

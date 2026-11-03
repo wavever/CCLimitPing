@@ -2,7 +2,7 @@
 
 [English](continue.md) | **中文**
 
-[文档目录](README.zh-CN.md) · [项目首页](../README.zh-CN.md)
+返回[中文 README](../README.zh-CN.md) · [文档目录](README.zh-CN.md)。
 
 `watch` 和 `bg` 能让窗口链保持接龙,但它们不会去恢复一个已经停在 5h 限额处的任务。
 `limitping continue <provider>` 可以:它通过 PTY 启动 Provider 真正的交互式 CLI,把你的

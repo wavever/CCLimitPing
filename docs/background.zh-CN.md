@@ -2,7 +2,7 @@
 
 [English](background.md) | **中文**
 
-[文档目录](README.zh-CN.md) · [项目首页](../README.zh-CN.md)
+返回[中文 README](../README.zh-CN.md) · [文档目录](README.zh-CN.md)。
 
 `watch` 默认前台运行。要释放终端,可用内置的 `bg` 命令把它作为脱离终端的后台进程运行:
 

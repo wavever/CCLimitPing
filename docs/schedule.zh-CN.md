@@ -2,7 +2,7 @@
 
 [English](schedule.md) | **中文**
 
-[文档目录](README.zh-CN.md) · [项目首页](../README.zh-CN.md)
+返回[中文 README](../README.zh-CN.md) · [文档目录](README.zh-CN.md)。
 
 需要按**墙钟时间**执行时,用 `schedule`;需要跟随限额窗口重置接龙时,继续用
 `watch`。`schedule` 会以前台常驻方式运行,在下一个固定间隔或每日指定时间点触发

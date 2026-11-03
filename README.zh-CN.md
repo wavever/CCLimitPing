@@ -1,66 +1,65 @@
 <p align="center">
-  <img src="assets/icon.png" alt="CCLimitPing icon" width="160">
+  <img src="assets/icon.png" alt="CCLimitPing" width="128">
 </p>
 
-# CCLimitPing (`limitping`)
+<h1 align="center">CCLimitPing</h1>
 
-[English](README.md) | **中文**
+<p align="center">
+  <strong>别再浪费 Claude Code / Codex 的 5 小时窗口。</strong><br>
+  <code>limitping</code> 在上一个限额窗口重置的瞬间，自动拉起下一个。
+</p>
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![CI](https://github.com/wavever/CCLimitPing/actions/workflows/ci.yml/badge.svg)](https://github.com/wavever/CCLimitPing/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/wavever/CCLimitPing?include_prereleases&sort=semver)](https://github.com/wavever/CCLimitPing/releases)
-![Go](https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go&logoColor=white)
-![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)
+<p align="center">
+  <a href="https://github.com/wavever/CCLimitPing/releases"><img src="https://img.shields.io/github/v/release/wavever/CCLimitPing?include_prereleases&sort=semver" alt="Release"></a>
+  <a href="https://github.com/wavever/CCLimitPing/actions/workflows/ci.yml"><img src="https://github.com/wavever/CCLimitPing/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/wavever/CCLimitPing/stargazers"><img src="https://img.shields.io/github/stars/wavever/CCLimitPing?style=flat" alt="Stars"></a>
+  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey" alt="Platform">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="MIT"></a>
+</p>
 
-在上一个窗口重置的瞬间,立即启动下一个 **Claude Code** / **Codex** 限额窗口。
+<p align="center"><a href="README.md">English</a> · <b>中文</b></p>
 
-Claude Code 和 Codex 的订阅限额按 **5 小时滚动窗口**(外加周限额)计算。新的 5h 窗口不会
-因为上一个窗口重置就自动开始,而是从你下一次真正发起计费请求时才开始。如果你隔了
-几个小时才再次使用,这段空档就被浪费了,窗口节奏也会越拖越偏。
+## 问题
 
-`limitping` 会读取每个 Provider 的重置时间,并在窗口翻篇后通过官方 CLI 发一条极小请求。
-你可以手动 `ping` 一次,也可以让 `watch` 前台守护,或者用 `bg start` 脱离终端在后台常驻。
+新的 5 小时窗口，从你发出**第一次计费请求**才开始，不是从上一个窗口重置的那一刻。
+晚回来 2 小时，这 2 小时就没了，后面的节奏也会越拖越偏。
 
-```
-claude  ✓ pinged (6.6s)
-codex   ✓ pinged (14s, 19,426 tokens (in 19,414 / out 12), $0.0023)
+```text
+没有 limitping   |====== 5h ======|..... 空档 2h .....|====== 5h ======|
+有 limitping     |====== 5h ======|====== 5h ======|====== 5h ======|
+                                  ↑ 重置瞬间自动 ping
 ```
 
 ## 快速开始
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/wavever/CCLimitPing/main/install.sh | sh
-limitping config init
-limitping watch
+limitping status        # 查看 5h / 周用量和重置倒计时
+limitping bg start      # 在后台把窗口首尾相接
 ```
 
-`watch` 在前台运行,Ctrl-C 停止。加 `--dry-run` 可先看会做什么、但不消耗额度;
-`limitping bg start` 则把它脱离终端。安装方式、升级和其余命令见[文档](docs/README.zh-CN.md)。
+单个二进制，不需要安装 Go。复用你已经登录的 `claude` / `codex`，不新增凭据，没有遥测。
+想先看会发生什么、先不花额度？`limitping ping --dry-run`。
 
 ## 亮点
 
-- 在窗口安全重置后立即 ping,让 5 小时窗口连续接上。
-- 手动 `ping`、前台 `watch`,或 `bg start` 后台常驻
-  (`bg status`、`bg logs -f`、`bg stop`)。
-- 展示 5h 与周用量、重置倒计时和后台监听状态。
-- 统计今日、本周、本月的 token 与按 API 价折算的费用,数据来自本地会话记录。
-- 通过官方 CLI 触发窗口,复用已有登录态;用量读取不消耗额度。
-- 用 [CLI 钩子](docs/hooks.zh-CN.md)避开正在进行的会话,不打断本来就要自己起算窗口的那一轮。
-- `continue` 在 5h 限额恢复时自动续跑挂起的任务。
-- 可在 Codex 重置卡和 Claude 重置卡过期前用掉它们(`redeem`,或 `auto_redeem`)。默认关闭。
-- 所有命令都能用 `lmp`(例如 `lmp s`、`lmp w`)。
-- 内置 dry-run、周限额保护、重置缓冲、低成本模型、macOS 通知、本地配置,且不带遥测。
+- ⏱️ **窗口首尾相接** — 重置后立刻通过官方 CLI ping。
+- 🧠 **不打断你正在做的事** — CLI 钩子发现活跃会话时，让这次会话自己起算窗口。
+- 🌙 **夜里的任务自动续上** — `limitping continue codex` 在限额恢复的瞬间输入 `continue`（仅 Unix，需要 PTY）。
+- 📊 **真实的 token 和费用** — 今日 / 本周 / 本月，读本地会话记录。
+- 🎟️ **重置卡别过期作废** — 列出 Codex 重置额度与 Claude 重置卡；可在过期前打开 `auto_redeem`。
+- ⌨️ **短命令** — 每条命令都能用 `lmp`（`lmp s`、`lmp w`）。
 
-## 支持的 Provider
-
-| Provider | 读取用量(零消耗) | 触发方式 | 鉴权 |
+| Provider | 读取用量（零消耗） | 触发方式 | 鉴权 |
 |---|---|---|---|
-| **Claude Code** | `…/api/oauth/usage` | 交互式 Claude Code CLI | OAuth(钥匙串 / `~/.claude`) |
-| **Codex** | `…/backend-api/wham/usage` | `codex exec --ephemeral` | OAuth(`~/.codex/auth.json`) |
+| **Claude Code** | `…/api/oauth/usage` | 交互式 Claude Code CLI | OAuth（钥匙串 / `~/.claude`） |
+| **Codex** | `…/backend-api/wham/usage` | `codex exec --ephemeral` | OAuth（`~/.codex/auth.json`） |
+
+ping 实际跑了什么、用量如何在不起算窗口的情况下读到，见 [工作原理](docs/how-it-works.zh-CN.md)。
 
 ## 文档
 
-- [工作原理](docs/how-it-works.zh-CN.md) — ping 发了什么,用量怎么读
+- [工作原理](docs/how-it-works.zh-CN.md) — ping 发了什么，用量怎么读
 - [安装、升级与卸载](docs/install.zh-CN.md)
 - [命令](docs/commands.zh-CN.md) — 完整命令列表、简称和 `lmp`
 - [状态、token 与费用](docs/status.zh-CN.md)

@@ -2,7 +2,7 @@
 
 **English** | [中文](continue.zh-CN.md)
 
-[Docs index](README.md) · [Project README](../README.md)
+Back to the [README](../README.md) · [Docs index](README.md).
 
 `watch` and `bg` keep your window chain warm, but they don't resume a task that
 has already stalled at the 5h limit. `limitping continue <provider>` does: it

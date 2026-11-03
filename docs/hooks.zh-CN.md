@@ -2,7 +2,7 @@
 
 [English](hooks.md) | **中文**
 
-[文档目录](README.zh-CN.md) · [项目首页](../README.zh-CN.md)
+返回[中文 README](../README.zh-CN.md) · [文档目录](README.zh-CN.md)。
 
 窗口重置时,`watch` 会避免在你正干活时发 ping——你那一轮对话本身就会起算下一个窗口。
 这依赖 **CLI 钩子**,安装脚本会自动帮你装好。如果没装钩子,Claude 会改用 Claude Code 自己的

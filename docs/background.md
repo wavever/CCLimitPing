@@ -2,7 +2,7 @@
 
 **English** | [中文](background.zh-CN.md)
 
-[Docs index](README.md) · [Project README](../README.md)
+Back to the [README](../README.md) · [Docs index](README.md).
 
 `watch` runs in the foreground. To free your terminal, run it as a detached
 background process with the built-in `bg` command:

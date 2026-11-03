@@ -2,7 +2,7 @@
 
 **English** | [中文](configuration.zh-CN.md)
 
-[Docs index](README.md) · [Project README](../README.md)
+Back to the [README](../README.md) · [Docs index](README.md).
 
 `~/.config/limitping/config.toml` (honors `$XDG_CONFIG_HOME`):
 
@@ -19,7 +19,7 @@ model      = "haiku"      # cheapest tier; triggering doesn't need a SOTA model
 extra_args = []           # extra Claude CLI args; print/headless-only flags are ignored
 align_start = ""          # optional RFC3339 anchor for the first window; empty = start ASAP
 continue_prompt = "continue"  # message `continue` injects on 5h recovery; empty = "continue"
-auto_redeem = false       # watch/continue spend a near-expiry reset; irreversible, so off
+auto_redeem = false       # watch/continue may spend an expiring reset card; irreversible, off by default
 
 [codex]
 enabled          = true
@@ -29,7 +29,7 @@ reasoning_effort = "low"  # "minimal" is rejected when web_search/image_gen tool
 extra_args       = []     # extra Codex CLI args; exec-only flags such as --json are ignored
 align_start      = ""
 continue_prompt  = "continue"  # message `continue` injects on 5h recovery; empty = "continue"
-auto_redeem = false       # watch/continue spend a near-expiry reset; irreversible, so off
+auto_redeem      = false  # watch/continue may spend an expiring reset credit; irreversible, off by default
 ```
 
 Top-level keys:
@@ -46,12 +46,6 @@ Top-level keys:
 - **`align_start`** (per provider) — pin the phase of your windows: set to a
   future RFC3339 time to delay the very first ping until then; afterwards windows
   chain automatically every ~5h.
-- **`auto_redeem`** (per provider) — when `true`, `watch` and `continue` spend a
-  banked reset once it is close to expiring: a Codex reset credit or a Claude
-  reset card (the one-off usage-limit resets Anthropic hands out, for example at
-  a model launch). `status` lists them; `limitping redeem` spends one by hand.
-  A banked reset is worth nothing after it expires. Off by default, because
-  redeeming is irreversible.
 
 ## Why a cheap model
 

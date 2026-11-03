@@ -2,7 +2,7 @@
 
 **English** | [中文](schedule.zh-CN.md)
 
-[Docs index](README.md) · [Project README](../README.md)
+Back to the [README](../README.md) · [Docs index](README.md).
 
 Use `schedule` when you want **wall-clock pings** instead of reset-aligned
 window chaining. It keeps running in the foreground and fires `ping` at the next

@@ -2,7 +2,7 @@
 
 [English](commands.md) | **中文**
 
-[文档目录](README.zh-CN.md) · [项目首页](../README.zh-CN.md)
+返回[中文 README](../README.zh-CN.md) · [文档目录](README.zh-CN.md)。
 
 分主题说明：[状态与费用](status.zh-CN.md)、[定时 ping](schedule.zh-CN.md)、[后台 watch](background.zh-CN.md)、[自动续跑](continue.zh-CN.md)、[钩子](hooks.zh-CN.md)、[安装与升级](install.zh-CN.md)。
 

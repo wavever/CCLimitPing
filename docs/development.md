@@ -2,7 +2,7 @@
 
 **English** | [中文](development.zh-CN.md)
 
-[Docs index](README.md) · [Project README](../README.md)
+Back to the [README](../README.md) · [Docs index](README.md).
 
 ## Layout
 
@@ -19,6 +19,7 @@ internal/scheduler       the watch engine (sleep-until-reset, weekly-respect, ba
 internal/notify          macOS osascript notifications
 internal/cli             cobra commands: status, ping, watch, schedule, continue, background, config, hooks, upgrade, uninstall, version
 ```
+
 
 ## Contributing
 

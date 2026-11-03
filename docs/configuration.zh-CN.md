@@ -2,7 +2,7 @@
 
 [English](configuration.md) | **中文**
 
-[文档目录](README.zh-CN.md) · [项目首页](../README.zh-CN.md)
+返回[中文 README](../README.zh-CN.md) · [文档目录](README.zh-CN.md)。
 
 `~/.config/limitping/config.toml`(支持 `$XDG_CONFIG_HOME`):
 
@@ -19,7 +19,7 @@ model      = "haiku"      # 最便宜的档位;触发并不需要 SOTA 模型
 extra_args = []           # 额外 Claude CLI 参数;print/headless-only 参数会被忽略
 align_start = ""          # 可选 RFC3339:首个窗口的相位锚点;留空 = 尽快开始
 continue_prompt = "continue"  # continue 在 5h 恢复时注入的消息;留空 = "continue"
-auto_redeem = false       # watch/continue 在重置卡临近过期时自动使用;不可撤销,故默认关闭
+auto_redeem = false       # watch/continue 可在重置卡临近过期时自动使用;不可撤销,默认关闭
 
 [codex]
 enabled          = true
@@ -29,7 +29,7 @@ reasoning_effort = "low"  # 启用 web_search/image_gen 工具时,"minimal" 会�
 extra_args       = []     # 额外 Codex CLI 参数;--json 等 exec-only 参数会被忽略
 align_start      = ""
 continue_prompt  = "continue"  # continue 在 5h 恢复时注入的消息;留空 = "continue"
-auto_redeem = false       # watch/continue 在重置卡临近过期时自动使用;不可撤销,故默认关闭
+auto_redeem      = false  # watch/continue 可在重置额度临近过期时自动使用;不可撤销,默认关闭
 ```
 
 顶层配置项:
@@ -41,11 +41,6 @@ auto_redeem = false       # watch/continue 在重置卡临近过期时自动使�
 - **`usage_display`** —— 文本 `status` / `bg status` 使用已用百分比还是剩余百分比。
 - **`align_start`**(每个 Provider)—— 固定窗口相位:设为一个未来的 RFC3339 时间,
   把第一次 ping 推迟到那时;之后窗口每 ~5h 自动接龙。
-- **`auto_redeem`**(每个 Provider)—— 设为 true 时,`watch` 和 `continue` 会在
-  Codex 重置卡或 Claude 重置卡临近过期时自动用掉它。Claude 重置卡是 Anthropic
-  不定期发放的一次性额度重置(例如新模型发布时)。`status` 会列出它们;
-  `limitping redeem` 手动兑换。攒着的重置卡一旦过期就归零。因为兑换不可撤销,
-  默认关闭。
 
 ## 为什么用便宜模型
 
