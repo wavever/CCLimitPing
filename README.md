@@ -1,147 +1,66 @@
 <p align="center">
-  <img src="assets/icon.png" alt="CCLimitPing icon" width="160">
+  <img src="assets/icon.png" alt="CCLimitPing" width="128">
 </p>
 
-# CCLimitPing (`limitping`)
+<h1 align="center">CCLimitPing</h1>
 
-**English** | [中文](README.zh-CN.md)
+<p align="center">
+  <strong>Never waste a minute of your Claude Code / Codex 5-hour window.</strong><br>
+  <code>limitping</code> starts your next rate-limit window the instant the last one resets — automatically.
+</p>
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![CI](https://github.com/wavever/CCLimitPing/actions/workflows/ci.yml/badge.svg)](https://github.com/wavever/CCLimitPing/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/wavever/CCLimitPing?include_prereleases&sort=semver)](https://github.com/wavever/CCLimitPing/releases)
-![Go](https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go&logoColor=white)
-![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)
+<p align="center">
+  <a href="https://github.com/wavever/CCLimitPing/releases"><img src="https://img.shields.io/github/v/release/wavever/CCLimitPing?include_prereleases&sort=semver" alt="Release"></a>
+  <a href="https://github.com/wavever/CCLimitPing/actions/workflows/ci.yml"><img src="https://github.com/wavever/CCLimitPing/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/wavever/CCLimitPing/stargazers"><img src="https://img.shields.io/github/stars/wavever/CCLimitPing?style=flat" alt="Stars"></a>
+  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey" alt="Platform">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="MIT"></a>
+</p>
 
-Start the next **Claude Code** or **Codex** rate-limit window the moment the
-previous one resets.
+<p align="center"><b>English</b> · <a href="README.zh-CN.md">中文</a></p>
 
-Claude Code and Codex subscription limits run on **5-hour rolling windows**
-(plus a weekly cap). A fresh 5h window does not start just because the previous
-one reset; it starts when you send the first billable request. If that
-happens hours later, the gap is wasted and your window schedule drifts.
+## The problem
 
-`limitping` watches the reset time and sends one tiny request through the
-official provider CLI right after rollover. Run it once, keep `watch` in the
-foreground, or start a detached `bg` watcher that keeps your window chain alive
-after the terminal closes.
+A new 5h window only starts when you send your **first billable request** — not when the old one resets.
+Come back 2 hours late and those 2 hours are gone, and your schedule drifts.
 
+```text
+Without limitping   |====== 5h ======|..... idle 2h .....|====== 5h ======|
+With limitping      |====== 5h ======|====== 5h ======|====== 5h ======|
+                                     ↑ auto-ping at reset
 ```
-claude  ✓ pinged (6.6s)
-codex   ✓ pinged (14s, 19,426 tokens (in 19,414 / out 12), $0.0023)
-```
-
-## Highlights
-
-- Keeps 5h windows continuous by pinging as soon as a reset is safely available.
-- Runs the way you do: one-shot `ping`, foreground `watch`, or detached
-  `bg start` with `bg status`, `bg logs -f`, and `bg stop`.
-- Shows 5h and weekly usage, reset countdowns, and background watcher state from
-  read-only usage endpoints.
-- Counts today's, this week's and this month's tokens and what they would have
-  cost at API rates, read from the CLIs' own local session transcripts — the
-  number the percentages never show.
-- Triggers Claude Code and Codex through their official CLIs using your existing
-  logged-in credentials.
-- Detects active Claude/Codex turns via CLI hooks, so a ping never interrupts a
-  session that is already about to start the window itself.
-- Auto-resumes parked tasks: `limitping continue <provider>` proxies the
-  official CLI and types your continue message the moment the 5h limit
-  recovers, so an overnight task doesn't sit at the limit until morning.
-- Spends reset credits before they lapse — Codex reset credits and Claude reset
-  cards (the one-off usage-limit resets Anthropic hands out, e.g. at a model
-  launch): `status` lists them, `limitping redeem` cashes one in by hand, and
-  `auto_redeem = true` lets `watch` / `continue` spend one on its own once it is
-  close to expiring — a banked reset is worth nothing after it expires. Off by
-  default, because redeeming is irreversible.
-- Types short: every command also works as `lmp` (e.g. `lmp s`, `lmp w`).
-- Includes dry-run modes, weekly-limit guards, reset buffers, cheap-model
-  defaults, macOS notifications, local config, and no telemetry.
 
 ## Quick start
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/wavever/CCLimitPing/main/install.sh | sh
-limitping config init
-limitping status
-limitping ping --dry-run
-limitping watch                # foreground, low-power (Ctrl-C to stop)
-# ...or run it in the background, freeing your terminal:
-limitping bg start
-limitping bg status
-limitping bg logs -f
+limitping status        # see your 5h / weekly usage and reset countdown
+limitping bg start      # keep windows back-to-back in the background
 ```
 
-Use dry-run first if you want to inspect what would happen without consuming
-provider quota: `limitping ping --dry-run`, `limitping watch --dry-run`, or
-`limitping bg start --dry-run`.
+Single binary, no Go required. Uses your existing `claude` / `codex` login — no new credentials, no telemetry.
+Want to look before it spends quota? `limitping ping --dry-run`.
 
-## Supported providers
+## Highlights
+
+- ⏱️ **Back-to-back windows** — pings each provider right after reset, via the official CLI.
+- 🧠 **Never interrupts you** — CLI hooks detect an active session and let it start the window itself.
+- 🌙 **Auto-continue overnight tasks** — `limitping continue codex` types "continue" the moment the limit recovers (Unix only; it needs a PTY).
+- 📊 **Real token & cost numbers** — today / week / month, from local session transcripts.
+- 🎟️ **Don't lose reset credits** — lists Codex reset credits and Claude reset cards; optional `auto_redeem` before expiry.
+- ⌨️ **Short to type** — every command works as `lmp` (`lmp s`, `lmp w`).
 
 | Provider | Read usage (zero-quota) | Trigger | Auth |
 |---|---|---|---|
 | **Claude Code** | `…/api/oauth/usage` | interactive Claude Code CLI | OAuth (Keychain / `~/.claude`) |
 | **Codex** | `…/backend-api/wham/usage` | `codex exec --ephemeral` | OAuth (`~/.codex/auth.json`) |
 
-## How it works
-
-Two cleanly separated jobs:
-
-| Job | Mechanism | Cost |
-|-----|-----------|------|
-| **Trigger** a new window | the official CLI (interactive Claude Code / headless `codex exec`) | a tiny slice of quota (this is the point) |
-| **Read** usage & reset times | zero-quota usage endpoints (the same ones CodexBar / community plugins use) | none — never starts a window |
-
-When `watch` sees a 5h window has reset, it first checks whether a Claude/Codex
-session is actively mid-turn. If one is, `limitping` waits and re-reads usage
-instead of sending its own ping, because that session's next model request will
-start the new window naturally. This check relies on the
-[CLI hooks](#active-session-detection-hooks) (installed automatically by the
-install script). Without them, Claude Code's own session list
-(`claude agents --json`) answers for Claude, and Codex's own session log
-(a rollout under `~/.codex/sessions` whose last turn is still open) answers
-for Codex.
-
-- **Claude**: reads `GET https://api.anthropic.com/api/oauth/usage` using the
-  OAuth token from the macOS Keychain (`Claude Code-credentials`) or
-  `~/.claude/.credentials.json` — or wherever `CLAUDE_CONFIG_DIR` points, as
-  Claude Code itself does. Triggering uses a TTY-backed interactive
-  `claude "<prompt>"` session, so it continues to start the Claude
-  subscription-backed window after the headless print command moves to Agent
-  SDK/API credits. The ping is kept as bare as the interactive CLI allows: it
-  runs under its own `--session-id` and its transcript is deleted afterwards
-  (pings used to pile up as "." conversations in `claude --resume`), with your
-  hooks off (`disableAllHooks`), no MCP servers (`--strict-mcp-config`), no
-  tools (`--tools ""`), no CLAUDE.md and nothing added to your prompt history
-  — each flag only when the installed Claude Code supports it. The ping runs in
-  the directory `watch` was started from when Claude Code trusts it; otherwise
-  (the home directory, say, whose trust Claude Code does not keep) it borrows a
-  directory Claude Code does trust and that has no project settings, so its
-  workspace-trust prompt never blocks it — and only when the transcript can be
-  deleted, so nothing is left behind there. If the usage endpoint returns an ambiguous 429, limitping
-  uses the free token-counting endpoint (which does not create a Message) to
-  distinguish a real endpoint throttle from Claude Code subscription access
-  being disabled.
-- **Codex**: reads `GET https://chatgpt.com/backend-api/wham/usage` using the
-  OAuth token from `~/.codex/auth.json`. Triggering runs
-  `codex exec --ephemeral --json "<prompt>"`. `--ephemeral` is the reason the
-  ping is headless: the interactive CLI cannot skip persisting a session, so
-  every ping used to leave an "ok" conversation behind in `codex resume` and in
-  the Codex Desktop thread list. `--json` makes the ping verifiable — its
-  `turn.completed` event is the only local proof that a billable request went
-  out, and it is where the reported token count and cost come from. The ping
-  also runs with `--disable hooks` and `--sandbox read-only`: your hooks have no
-  business firing for a synthetic session (it must not register itself as an
-  active Codex session either), and nothing reviews what the model does on this
-  path, unlike an interactive session with you at the keys.
-
-Claude/Codex tokens are reused from the official tools (no separate login) and
-refreshed on 401.
+What a ping actually runs, and how usage is read without starting a window: [How it works](docs/how-it-works.md).
 
 ## Install
 
 `limitping` ships as a single self-contained binary — **no Go required**.
-
-**One-line script** (macOS / Linux):
+The one-line install and `limitping upgrade` support **macOS and Linux**:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/wavever/CCLimitPing/main/install.sh | sh
@@ -151,7 +70,17 @@ Downloads the right prebuilt binary from the
 [latest release](https://github.com/wavever/CCLimitPing/releases/latest) into
 `/usr/local/bin` (or `~/.local/bin`). Override with `LIMITPING_INSTALL_DIR`.
 
-**Upgrade** — replace the installed binary with the latest release:
+Each provider you enable needs its own credentials: the `claude` / `codex` CLIs
+logged in.
+
+**Windows** release archives are `.zip` only. `install.sh` does not run there,
+`limitping upgrade` will not replace a Windows binary, and `limitping continue`
+is Unix-only. See [Manual download](#manual-download).
+
+<details>
+<summary>Upgrade</summary>
+
+Replace the installed binary with the latest release:
 
 ```sh
 limitping upgrade
@@ -183,7 +112,14 @@ background watchers stay silent.
 
 Aliases: `limitping up`, `limitping update`.
 
-**Uninstall** — remove the installed binary plus config/cache:
+On Windows, `upgrade` does not run; download the latest zip from Releases instead.
+
+</details>
+
+<details>
+<summary>Uninstall</summary>
+
+Remove the installed binary plus config/cache:
 
 ```sh
 limitping uninstall
@@ -194,19 +130,37 @@ Aliases: `limitping rm`, `limitping remove`.
 Use `limitping uninstall --keep-config` to preserve `~/.config/limitping` (or
 `$XDG_CONFIG_HOME/limitping`).
 
-**Manual download** — grab the archive for your platform from the
-[Releases](https://github.com/wavever/CCLimitPing/releases) page (`.tar.gz` for
-macOS/Linux, `.zip` for Windows):
+</details>
+
+<details>
+<summary>Manual download</summary>
+
+<a id="manual-download"></a>
+
+Grab the archive from the
+[Releases](https://github.com/wavever/CCLimitPing/releases) page.
+
+macOS and Linux ship as `.tar.gz` (the install script picks the matching one):
 
 ```sh
 tar -xzf limitping_darwin_arm64.tar.gz
 sudo mv limitping /usr/local/bin/
 ```
 
-**Homebrew** (macOS / Linux) — `brew install wavever/tap/limitping`
-_(works once the Homebrew tap is set up — see `.goreleaser.yaml`)._
+Windows ships as `.zip` (`limitping_windows_amd64.zip`, `limitping_windows_arm64.zip`).
+That zip is a manual drop-in only: the install script rejects Windows,
+`limitping upgrade` tells you to download the zip yourself, and
+`limitping continue` reports that it is unsupported there because it needs a
+Unix PTY. `status`, `ping`, `watch`, and `bg` can still run from the unzipped
+binary. Claude credentials on macOS come from the Keychain; elsewhere they come
+from `~/.claude/.credentials.json`. Notifications are macOS-only.
 
-**From source** (developers, needs Go 1.25+):
+</details>
+
+<details>
+<summary>From source</summary>
+
+Developers, needs Go 1.25+:
 
 ```sh
 go install github.com/wavever/CCLimitPing/cmd/limitping@latest
@@ -214,8 +168,7 @@ go install github.com/wavever/CCLimitPing/cmd/limitping@latest
 go build -o bin/limitping ./cmd/limitping
 ```
 
-Each provider you enable needs its own credentials: the `claude` / `codex` CLIs
-logged in.
+</details>
 
 ## Usage
 
@@ -499,6 +452,7 @@ model      = "haiku"      # cheapest tier; triggering doesn't need a SOTA model
 extra_args = []           # extra Claude CLI args; print/headless-only flags are ignored
 align_start = ""          # optional RFC3339 anchor for the first window; empty = start ASAP
 continue_prompt = "continue"  # message `continue` injects on 5h recovery; empty = "continue"
+auto_redeem = false       # watch/continue may spend an expiring reset card; irreversible, off by default
 
 [codex]
 enabled          = true
@@ -508,6 +462,7 @@ reasoning_effort = "low"  # "minimal" is rejected when web_search/image_gen tool
 extra_args       = []     # extra Codex CLI args; exec-only flags such as --json are ignored
 align_start      = ""
 continue_prompt  = "continue"  # message `continue` injects on 5h recovery; empty = "continue"
+auto_redeem      = false  # watch/continue may spend an expiring reset credit; irreversible, off by default
 ```
 
 Top-level keys:

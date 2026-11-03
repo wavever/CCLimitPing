@@ -1,138 +1,92 @@
 <p align="center">
-  <img src="assets/icon.png" alt="CCLimitPing icon" width="160">
+  <img src="assets/icon.png" alt="CCLimitPing" width="128">
 </p>
 
-# CCLimitPing (`limitping`)
+<h1 align="center">CCLimitPing</h1>
 
-[English](README.md) | **中文**
+<p align="center">
+  <strong>别再浪费 Claude Code / Codex 的 5 小时窗口。</strong><br>
+  <code>limitping</code> 在上一个限额窗口重置的瞬间，自动拉起下一个。
+</p>
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![CI](https://github.com/wavever/CCLimitPing/actions/workflows/ci.yml/badge.svg)](https://github.com/wavever/CCLimitPing/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/wavever/CCLimitPing?include_prereleases&sort=semver)](https://github.com/wavever/CCLimitPing/releases)
-![Go](https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go&logoColor=white)
-![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)
+<p align="center">
+  <a href="https://github.com/wavever/CCLimitPing/releases"><img src="https://img.shields.io/github/v/release/wavever/CCLimitPing?include_prereleases&sort=semver" alt="Release"></a>
+  <a href="https://github.com/wavever/CCLimitPing/actions/workflows/ci.yml"><img src="https://github.com/wavever/CCLimitPing/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/wavever/CCLimitPing/stargazers"><img src="https://img.shields.io/github/stars/wavever/CCLimitPing?style=flat" alt="Stars"></a>
+  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey" alt="Platform">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="MIT"></a>
+</p>
 
-在上一个窗口重置的瞬间,立即启动下一个 **Claude Code** / **Codex** 限额窗口。
+<p align="center"><a href="README.md">English</a> · <b>中文</b></p>
 
-Claude Code 和 Codex 的订阅限额按 **5 小时滚动窗口**(外加周限额)计算。新的 5h 窗口不会
-因为上一个窗口重置就自动开始,而是从你下一次真正发起计费请求时才开始。如果你隔了
-几个小时才再次使用,这段空档就被浪费了,窗口节奏也会越拖越偏。
+## 问题
 
-`limitping` 会读取每个 Provider 的重置时间,并在窗口翻篇后通过官方 CLI 发一条极小请求。
-你可以手动 `ping` 一次,也可以让 `watch` 前台守护,或者用 `bg start` 脱离终端在后台常驻。
+新的 5 小时窗口，从你发出**第一次计费请求**才开始，不是从上一个窗口重置的那一刻。
+晚回来 2 小时，这 2 小时就没了，后面的节奏也会越拖越偏。
 
+```text
+没有 limitping   |====== 5h ======|..... 空档 2h .....|====== 5h ======|
+有 limitping     |====== 5h ======|====== 5h ======|====== 5h ======|
+                                  ↑ 重置瞬间自动 ping
 ```
-claude  ✓ pinged (6.6s)
-codex   ✓ pinged (14s, 19,426 tokens (in 19,414 / out 12), $0.0023)
-```
-
-## 亮点
-
-- 在窗口安全重置后立即 ping,让 5 小时窗口连续接上,不被空档拖偏。
-- 支持多种运行方式:手动 `ping`、前台 `watch`,或用 `bg start` 后台常驻;配套
-  `bg status`、`bg logs -f`、`bg stop` 管理。
-- `status` / `bg status` 会展示 5h 与周用量、重置倒计时以及后台监听状态。
-- 统计今日、本周、本月的 token 消耗与按 API 价折算的预估费用,数据取自 CLI 自己的本地会话记录——
-  这是百分比永远给不出的那个数字。
-- 通过只读用量端点读取状态,通过官方 Claude Code / Codex CLI 触发窗口,复用已有登录态。
-- 通过 CLI 钩子识别正在进行中的 Claude/Codex 会话,不会打断本来就要自己起算窗口的会话。
-- 自动续跑挂起的任务:`limitping continue <provider>` 代理官方 CLI,在 5h 限额恢复的
-  瞬间自动输入续跑消息,让整夜的任务不用一直停在限额处等你回来。
-- 在重置卡过期前用掉它 —— 包括 Codex 重置卡和 Claude 重置卡(Anthropic 不定期发放的
-  一次性额度重置,例如新模型发布时):`status` 会列出它们,`limitping redeem` 手动兑换;
-  开启 `auto_redeem = true` 后,`watch` / `continue` 会在卡临近过期时自动使用 ——
-  攒着的重置卡一旦过期就归零。因为兑换不可撤销,默认关闭。
-- 命令名可以更短:所有命令都能用 `lmp` 触发(例如 `lmp s`、`lmp w`)。
-- 内置 dry-run、周限额保护、重置缓冲、低成本模型默认值、macOS 通知、本地配置,且不带遥测。
 
 ## 快速开始
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/wavever/CCLimitPing/main/install.sh | sh
-limitping config init
-limitping status
-limitping ping --dry-run
-limitping watch                # 前台低功耗运行(Ctrl-C 停止)
-# ...或在后台运行,释放终端:
-limitping bg start
-limitping bg status
-limitping bg logs -f
+limitping status        # 查看 5h / 周用量和重置倒计时
+limitping bg start      # 在后台把窗口首尾相接
 ```
 
-如果你想先确认会发生什么、但不消耗 Provider 额度,可以先运行
-`limitping ping --dry-run`、`limitping watch --dry-run` 或
-`limitping bg start --dry-run`。
+单个二进制，不需要安装 Go。复用你已经登录的 `claude` / `codex`，不新增凭据，没有遥测。
+想先看会发生什么、先不花额度？`limitping ping --dry-run`。
 
-## 支持的 Provider
+## 亮点
 
-| Provider | 读取用量(零消耗) | 触发方式 | 鉴权 |
+- ⏱️ **窗口首尾相接** — 重置后立刻通过官方 CLI ping。
+- 🧠 **不打断你正在做的事** — CLI 钩子发现活跃会话时，让这次会话自己起算窗口。
+- 🌙 **夜里的任务自动续上** — `limitping continue codex` 在限额恢复的瞬间输入 `continue`（仅 Unix，需要 PTY）。
+- 📊 **真实的 token 和费用** — 今日 / 本周 / 本月，读本地会话记录。
+- 🎟️ **重置卡别过期作废** — 列出 Codex 重置额度与 Claude 重置卡；可在过期前打开 `auto_redeem`。
+- ⌨️ **短命令** — 每条命令都能用 `lmp`（`lmp s`、`lmp w`）。
+
+| Provider | 读取用量（零消耗） | 触发方式 | 鉴权 |
 |---|---|---|---|
-| **Claude Code** | `…/api/oauth/usage` | 交互式 Claude Code CLI | OAuth(钥匙串 / `~/.claude`) |
-| **Codex** | `…/backend-api/wham/usage` | `codex exec --ephemeral` | OAuth(`~/.codex/auth.json`) |
+| **Claude Code** | `…/api/oauth/usage` | 交互式 Claude Code CLI | OAuth（钥匙串 / `~/.claude`） |
+| **Codex** | `…/backend-api/wham/usage` | `codex exec --ephemeral` | OAuth（`~/.codex/auth.json`） |
 
-## 工作原理
-
-两件事职责完全分离:
-
-| 任务 | 机制 | 代价 |
-|------|------|------|
-| **触发**新窗口 | 官方 CLI(交互式 Claude Code / headless `codex exec`) | 消耗一点额度(这正是功能本身) |
-| **读取**用量与重置时刻 | 零消耗用量端点(和 CodexBar / 社区插件用的是同一批) | 不消耗,也绝不会起算窗口 |
-
-当 `watch` 发现 5h 窗口已经重置时,会先检查是否有 Claude/Codex 会话正处于对话进行中。
-如果有,`limitping` 会等待并重新读取用量,而不是自己发 ping,因为这个会话的下一次模型
-请求会自然起算新窗口。这个检查依赖 [CLI 钩子](#活跃会话检测钩子)(安装脚本会自动装好);
-未安装钩子时,Claude 改用 Claude Code 自己的会话列表(`claude agents --json`)判断,Codex 改用
-它自己的会话日志(`~/.codex/sessions` 下最后一轮仍未结束的 rollout)判断(绝不靠扫描进程来猜)。
-
-- **Claude**:用 macOS 钥匙串(`Claude Code-credentials`)或 `~/.claude/.credentials.json`
-  (设置了 `CLAUDE_CONFIG_DIR` 时与 Claude Code 一样改用该目录)里的 OAuth token,读
-  `GET https://api.anthropic.com/api/oauth/usage`。触发使用带
-  TTY 的交互式 `claude "<prompt>"` 会话,因此在 headless print 命令改走 Agent
-  SDK/API credits 后仍会起算 Claude 订阅窗口。ping 尽量精简:用独立的 `--session-id`
-  运行、结束后删除其会话记录(以前每次 ping 都会在 `claude --resume` 里留下一条 "."
-  会话),并关闭你的钩子(`disableAllHooks`)、不启动 MCP(`--strict-mcp-config`)、不带
-  工具(`--tools ""`)、不读 CLAUDE.md、不写入输入历史 —— 每个参数都只在已安装的 Claude Code
-  支持时才加。ping 默认在启动 `watch` 的目录里运行;若 Claude Code 没有信任这个目录(比如家目录,
-  Claude Code 不会保存对它的信任),就借用一个 Claude Code 已信任、且没有项目设置的目录,
-  免得被工作区信任确认挡住 —— 并且只有在能删掉会话记录时才借用,不会在那里留下任何对话。
-  如果用量端点返回语义不明的
-  429,limitping 会调用免费且不创建 Message 的 token-counting 端点,区分真实的
-  端点限流与 Claude Code 订阅访问被禁用。
-- **Codex**:用 `~/.codex/auth.json` 里的 OAuth token,读
-  `GET https://chatgpt.com/backend-api/wham/usage`。触发执行
-  `codex exec --ephemeral --json "<prompt>"`。ping 之所以走 headless,就是为了
-  `--ephemeral`:交互式 CLI 没有办法不落盘会话,所以以前每次 ping 都会在
-  `codex resume` 和 Codex Desktop 的对话列表里留下一条 `ok` 会话。`--json` 让 ping
-  可验证 —— 它的 `turn.completed` 事件是本地唯一能证明「确实发出了一次计费请求」的
-  依据,报告里的 token 数和费用也来自这里。ping 同时带 `--disable hooks` 和
-  `--sandbox read-only`:钩子没理由为一个合成会话触发(它也不该把自己登记成活跃的
-  Codex 会话),而且这条路径上没有人审阅模型的动作 —— 交互式会话有你在键盘前,它没有。
-
-Claude/Codex 的 token 直接复用官方工具(无需另外登录),遇到 401 会自动刷新。
+ping 实际跑了什么、用量如何在不起算窗口的情况下读到，见 [工作原理](docs/how-it-works.zh-CN.md)。
 
 ## 安装
 
-`limitping` 是一个自包含的单文件二进制——**普通用户无需安装 Go**。
-
-**一行脚本**(macOS / Linux):
+`limitping` 是一个自包含的单文件二进制 —— **普通用户无需安装 Go**。
+一行安装脚本和 `limitping upgrade` 支持 **macOS 与 Linux**：
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/wavever/CCLimitPing/main/install.sh | sh
 ```
 
 会从[最新 Release](https://github.com/wavever/CCLimitPing/releases/latest)下载对应
-平台的预编译二进制,装到 `/usr/local/bin`(或 `~/.local/bin`)。可用
+平台的预编译二进制，装到 `/usr/local/bin`（或 `~/.local/bin`）。可用
 `LIMITPING_INSTALL_DIR` 覆盖安装目录。
 
-**升级** —— 用最新 Release 替换已安装的二进制:
+你启用的每个 Provider 各自需要凭据：登录好的 `claude` / `codex` CLI。
+
+**Windows** 的 Release 只有 `.zip`。`install.sh` 不会在 Windows 上运行，
+`limitping upgrade` 也不会替换 Windows 上的二进制，`limitping continue` 仅支持
+Unix。见[手动下载](#手动下载)。
+
+<details>
+<summary>升级</summary>
+
+用最新 Release 替换已安装的二进制：
 
 ```sh
 limitping upgrade
 ```
 
-`upgrade` 会先检查,已是最新就直接告诉你;`--force` 可强制重装。`status`、`ping`、
-`bg status` 和 `continue` 也会在自己的输出之前提示新版本,每个版本只提示到你处理为止:
+`upgrade` 会先检查，已是最新就直接告诉你；`--force` 可强制重装。`status`、`ping`、
+`bg status` 和 `continue` 也会在自己的输出之前提示新版本，每个版本只提示到你处理为止：
 
 ```
 ✨ 有新版本!  0.9.0 -> 0.10.0
@@ -145,45 +99,68 @@ limitping upgrade
    ↑/↓ 移动 · Enter 确认 · Esc 跳过
 ```
 
-用方向键移动、回车确认(和 Provider CLI 一致);数字键仍可直接选中。光标初始停在
-「跳过」——这个提示打断的是你真正要跑的命令,所以回车、Esc、Ctrl-C 都保持原样、
-什么都不做。选 3 会把该版本记进 `~/.config/limitping/version.json`,直到下一个版本
-才再提醒。检查每 4 小时最多一次、最长阻塞 2 秒,并且在非交互终端下完全跳过 —— 所以
+用方向键移动、回车确认（和 Provider CLI 一致）；数字键仍可直接选中。光标初始停在
+「跳过」——这个提示打断的是你真正要跑的命令，所以回车、Esc、Ctrl-C 都保持原样、
+什么都不做。选 3 会把该版本记进 `~/.config/limitping/version.json`，直到下一个版本
+才再提醒。检查每 4 小时最多一次、最长阻塞 2 秒，并且在非交互终端下完全跳过 —— 所以
 `--json`、`hook` 回调和后台守护进程都不会被打扰。
 
-简称/别名:`limitping up`、`limitping update`。
+简称/别名：`limitping up`、`limitping update`。
 
-**卸载** —— 删除已安装的二进制以及配置/缓存:
+Windows 上 `upgrade` 不会运行；请从 Releases 下载最新的 zip。
+
+</details>
+
+<details>
+<summary>卸载</summary>
+
+删除已安装的二进制以及配置/缓存：
 
 ```sh
 limitping uninstall
 ```
 
-简称/别名:`limitping rm`、`limitping remove`。
+简称/别名：`limitping rm`、`limitping remove`。
 
-使用 `limitping uninstall --keep-config` 可保留 `~/.config/limitping`(或
-`$XDG_CONFIG_HOME/limitping`)。
+使用 `limitping uninstall --keep-config` 可保留 `~/.config/limitping`（或
+`$XDG_CONFIG_HOME/limitping`）。
 
-**手动下载** —— 从 [Releases](https://github.com/wavever/CCLimitPing/releases) 页面
-下载对应平台的压缩包(macOS/Linux 是 `.tar.gz`,Windows 是 `.zip`):
+</details>
+
+<details>
+<summary>手动下载</summary>
+
+<a id="手动下载"></a>
+
+从 [Releases](https://github.com/wavever/CCLimitPing/releases) 页面下载对应平台的压缩包。
+
+macOS 和 Linux 是 `.tar.gz`（安装脚本会选中匹配的那一个）：
 
 ```sh
 tar -xzf limitping_darwin_arm64.tar.gz
 sudo mv limitping /usr/local/bin/
 ```
 
-**Homebrew**(macOS / Linux)—— `brew install wavever/tap/limitping`
-_(配好 Homebrew tap 后可用;见 `.goreleaser.yaml`)。_
+Windows 是 `.zip`（`limitping_windows_amd64.zip`、`limitping_windows_arm64.zip`）。
+这个 zip 只适合手动解压：安装脚本会拒绝 Windows，`limitping upgrade` 会让你自己
+下载 zip，`limitping continue` 会提示暂不支持，因为它需要 Unix PTY。解压后的二进制
+仍然可以跑 `status`、`ping`、`watch` 和 `bg`。Claude 在 macOS 上从钥匙串读凭据，
+其他平台用 `~/.claude/.credentials.json`。通知仅 macOS 可用。
 
-**从源码**(开发者,需要 Go 1.25+):
+</details>
+
+<details>
+<summary>从源码构建</summary>
+
+面向开发者，需要 Go 1.25+：
 
 ```sh
 go install github.com/wavever/CCLimitPing/cmd/limitping@latest
-# 或在克隆后:
+# 或在克隆后：
 go build -o bin/limitping ./cmd/limitping
 ```
 
-你启用的每个 Provider 各自需要凭据:登录好的 `claude` / `codex` CLI。
+</details>
 
 ## 使用
 
@@ -451,6 +428,7 @@ model      = "haiku"      # 最便宜的档位;触发并不需要 SOTA 模型
 extra_args = []           # 额外 Claude CLI 参数;print/headless-only 参数会被忽略
 align_start = ""          # 可选 RFC3339:首个窗口的相位锚点;留空 = 尽快开始
 continue_prompt = "continue"  # continue 在 5h 恢复时注入的消息;留空 = "continue"
+auto_redeem = false       # watch/continue 可在重置卡临近过期时自动使用;不可撤销,默认关闭
 
 [codex]
 enabled          = true
@@ -460,6 +438,7 @@ reasoning_effort = "low"  # 启用 web_search/image_gen 工具时,"minimal" 会�
 extra_args       = []     # 额外 Codex CLI 参数;--json 等 exec-only 参数会被忽略
 align_start      = ""
 continue_prompt  = "continue"  # continue 在 5h 恢复时注入的消息;留空 = "continue"
+auto_redeem      = false  # watch/continue 可在重置额度临近过期时自动使用;不可撤销,默认关闭
 ```
 
 顶层配置项:
