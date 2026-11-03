@@ -20,7 +20,6 @@ internal/notify          macOS osascript notifications
 internal/cli             cobra commands: status, ping, watch, schedule, continue, background, config, hooks, upgrade, uninstall, version
 ```
 
-
 ## Contributing
 
 Issues and PRs are welcome. See [CONTRIBUTING.md](../CONTRIBUTING.md) and
